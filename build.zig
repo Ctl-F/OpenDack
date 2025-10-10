@@ -21,7 +21,6 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
 
-    // exe.linkSystemLibrary(.{});
     b.installArtifact(exe);
 
     const copy_step = b.addSystemCommand(&.{
