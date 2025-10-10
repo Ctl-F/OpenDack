@@ -39,11 +39,8 @@ pub fn build(b: *std.Build) void {
         "if=pflash,format=raw,file=/home/ctlf/qemu_uefi/OVMF/OVMF_VARS.fd",
         "-drive",
         "format=raw,file=fat:rw:root",
-        // "-global",
-        // "driver=uefi-debug-console,iobase=0x402",
+        "-s",
     });
-
-    //run.addArtifactArg(exe);
 
     run.step.dependOn(&copy_step.step);
 
