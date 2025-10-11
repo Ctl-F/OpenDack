@@ -47,9 +47,8 @@ fn convert_nibble(val: u4) u8 {
 }
 
 fn convert_to_hex(comptime T: type, val: T, buffer: []u8) void {
-    const tmp = val;
-    const ptr: [*]u8 = @ptrCast(@alignCast(@constCast(&tmp)));
-    const bytes: []u8 = ptr[0..@sizeOf(T)];
+    const ptr = @as(*const [*]u8, @ptrCast(@alignCast(&val)));
+    const bytes: []u8 = &ptr[0..@sizeOf(T)];
 
     var index: usize = 0;
     for (bytes) |byte| {
@@ -63,7 +62,7 @@ fn convert_to_hex(comptime T: type, val: T, buffer: []u8) void {
 }
 
 pub fn dump_bytes(comptime T: type, span: []const T) void {
-    var buffer = [_]u8{0} ** @sizeOf(T);
+    var buffer = [_]u8{ 0, 0 } ** @sizeOf(T);
     for (span) |v| {
         convert_to_hex(T, v, &buffer);
         write_ascii(&buffer);
