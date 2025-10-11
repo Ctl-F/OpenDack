@@ -8,6 +8,9 @@ const LINE_STATUS_REG: u16 = 5; // bit 5 (0x20) is set when THR is empty
 const MODEM_STATUS_REG: u16 = 6;
 const SCRATCH_REG: u16 = 7;
 
+const hal = @import("hal/x86_64.zig");
+const io = hal.io;
+
 pub fn init_com1() void {
     // disable interrupts
     io.out8(COM1 + INTERRUPT_ENABLE_REG, 0x00);
@@ -47,13 +50,17 @@ fn convert_nibble(val: u4) u8 {
 }
 
 fn convert_to_hex(comptime T: type, val: T, buffer: []u8) void {
-    const ptr = @as(*const [*]u8, @ptrCast(@alignCast(&val)));
-    const bytes: []u8 = &ptr[0..@sizeOf(T)];
+    const t_ptr: *const T = &val;
+    const b_ptr: [*]const u8 = @ptrCast(@alignCast(t_ptr));
+    const bytes: []const u8 = b_ptr[0..@sizeOf(T)];
 
     var index: usize = 0;
-    for (bytes) |byte| {
+    var i: usize = @sizeOf(T);
+    while (i > 0) : (i -= 1) {
+        const byte = bytes[i - 1];
+
         const low = byte & 0xF;
-        const high = (byte & 0xF0) >> 4;
+        const high = (byte >> 4) & 0xF;
 
         buffer[index] = convert_nibble(@truncate(high));
         buffer[index + 1] = convert_nibble(@truncate(low));
@@ -61,11 +68,39 @@ fn convert_to_hex(comptime T: type, val: T, buffer: []u8) void {
     }
 }
 
-pub fn dump_bytes(comptime T: type, span: []const T) void {
+pub const ByteFmt = struct {
+    Space: u2 = 1,
+    PrintAddr: bool = false,
+    IncAscii: bool = false,
+};
+
+pub fn dump_bytes(comptime T: type, span: []const T, comptime fmt: ByteFmt) void {
+    if (fmt.PrintAddr) {
+        var lbuffer = [_]u8{ 0, 0 } ** @sizeOf(u64);
+        convert_to_hex(u64, @as(u64, @intFromPtr(span.ptr)), &lbuffer);
+        write_ascii(&lbuffer);
+        write_ascii(": ");
+    }
+
     var buffer = [_]u8{ 0, 0 } ** @sizeOf(T);
     for (span) |v| {
         convert_to_hex(T, v, &buffer);
         write_ascii(&buffer);
+
+        if (fmt.IncAscii) {
+            if (v > ' ' and v < 128) {
+                write_ascii("(");
+
+                write_ascii(&.{@as(u8, @truncate(v))});
+
+                write_ascii(")");
+            }
+        }
+
+        if (fmt.Space > 0) {
+            const sp = [_]u8{' '} ** fmt.Space;
+            write_ascii(&sp);
+        }
     }
 }
 
@@ -79,31 +114,3 @@ pub fn write_utf16(s: []const u16) void {
         serial_write_char(ch);
     }
 }
-
-const io = struct {
-    pub fn in8(port: u16) u8 {
-        // asm volatile ("inb {port}, {val}"
-        //     : [val] "=a" (val),
-        //     : [port] "Nd" (port),
-        // );
-
-        return asm volatile ("inb %[port], %[ret]"
-            : [ret] "={al}" (-> u8),
-            : [port] "{dx}" (port),
-        );
-    }
-
-    pub fn out8(port: u16, val: u8) void {
-        asm volatile ("outb %[val], %[port]"
-            :
-            : [val] "{al}" (val),
-              [port] "{dx}" (port),
-        );
-
-        // asm volatile ("outb {val}, {port}"
-        //     :
-        //     : [val] "a" (val),
-        //       [port] "Nd" (port),
-        // );
-    }
-};

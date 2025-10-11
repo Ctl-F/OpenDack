@@ -8,9 +8,9 @@ const Pool = uefi_str.WideStringPool(u16, &.{
     .{
         .src = "Hello UEFI\r\n",
     },
-    .{
-        .src = "Press any key to continue...\r\n",
-    },
+    // .{
+    //     .src = "Press any key to continue...\r\n",
+    // },
 }){};
 
 pub export fn EfiMain(
@@ -25,12 +25,10 @@ pub export fn EfiMain(
 
     //_ = stdout.outputString(Pool.get_str(0));
     serial.write_ascii("Hello UEFI\n");
-    serial.dump_bytes(u8, &.{ 0xDE, 0xAD, 0xBE, 0xEF });
-    serial.write_ascii("\n!\n");
-    //serial.dump_bytes(u16, Pool.get_str(0));
-    //serial.write_ascii("\n");
-    //serial.dump_bytes(u16, Pool.get_str(1));
-    //serial.write_ascii("\n");
+    serial.dump_bytes(u16, Pool.get_str(0), .{ .IncAscii = true });
+    serial.write_ascii("\n");
+    //serial.dump_bytes(u16, Pool.get_str(1), .{ .IncAscii = true });
+    serial.write_ascii("\n");
     //flush_console(sys);
     //_ = stdout.outputString(Pool.get_str(1));
     //flush_console(sys);
