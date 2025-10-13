@@ -1,37 +1,43 @@
 const std = @import("std");
-const uefi_str = @import("uefi_str.zig");
-const serial = @import("serial.zig");
-
 const uefi = std.os.uefi;
 
-const Pool = uefi_str.WideStringPool(u16, &.{
-    .{
-        .src = "Hello UEFI\r\n",
-    },
-    // .{
-    //     .src = "Press any key to continue...\r\n",
-    // },
-}){};
+const log = @import("log.zig");
+
+const long_string = " 0) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
+    " 1) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
+    " 2) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
+    " 3) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
+    " 4) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
+    " 5) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
+    " 6) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
+    " 7) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
+    " 8) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
+    " 9) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
+    "10) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
+    "11) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
+    "12) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
+    "13) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
+    "14) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
+    "15) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
+    "16) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
+    "17) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
+    "18) And this is the end...\r\n";
 
 pub export fn EfiMain(
     image_handle: uefi.Handle,
     sys: *uefi.tables.SystemTable,
 ) uefi.Status {
     _ = image_handle;
-    serial.init_com1();
 
-    const stdout = sys.con_out.?;
-    _ = stdout.reset(false);
+    log.init(.{
+        .serial = true,
+        .stdout = true,
+    }, sys.con_out.?);
 
-    //_ = stdout.outputString(Pool.get_str(0));
-    serial.write_ascii("Hello UEFI\n");
-    serial.dump_bytes(u16, Pool.get_str(0), .{ .IncAscii = true });
-    serial.write_ascii("\n");
-    //serial.dump_bytes(u16, Pool.get_str(1), .{ .IncAscii = true });
-    serial.write_ascii("\n");
-    //flush_console(sys);
-    //_ = stdout.outputString(Pool.get_str(1));
-    //flush_console(sys);
+    log.write("Hello UEFI\r\n");
+    log.write("Press any key to continue...\r\n");
+
+    log.write(long_string);
 
     var input = sys.con_in.?;
     _ = input.reset(false);
@@ -44,22 +50,4 @@ pub export fn EfiMain(
         _ = sys.boot_services.?.stall(50000);
     }
     return .success;
-}
-
-fn flush_console(sys: *uefi.tables.SystemTable) void {
-    const bs = sys.boot_services.?;
-
-    var event: uefi.Event = undefined;
-    if (bs.createEvent(
-        uefi.tables.BootServices.event_timer | uefi.tables.BootServices.event_notify_signal,
-        uefi.tables.BootServices.tpl_application,
-        null,
-        null,
-        &event,
-    ) != .success) return;
-
-    _ = bs.setTimer(event, uefi.tables.TimerDelay.timer_relative, 50000000);
-    var index: usize = 0;
-    _ = bs.waitForEvent(1, &[_]uefi.Event{event}, &index);
-    _ = bs.closeEvent(event);
 }

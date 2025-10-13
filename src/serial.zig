@@ -35,6 +35,36 @@ fn serial_write_char(c: u8) void {
     io.out8(COM1, c);
 }
 
+pub fn write_int(comptime iTy: type, value: iTy) void {
+    const info = switch (@typeInfo(iTy)) {
+        .int => |iinfo| iinfo,
+        else => @compileError("Expected integer type"),
+    };
+
+    var val = value;
+
+    const is_signed = info.signedness == .signed;
+
+    if (val == 0) {
+        write_ascii("0");
+        return;
+    }
+
+    if (is_signed and val < 0) {
+        write_ascii("-");
+        val = @abs(val);
+    }
+
+    var place: iTy = 10;
+    while (val >= place) : (place *= 10) {}
+    place /= 10;
+
+    while (place > 0) : (place /= 10) {
+        const digit = (val / place) % 10;
+        write_ascii(&.{'0' + @as(u8, @intCast(digit))});
+    }
+}
+
 pub fn write_ascii(s: []const u8) void {
     for (s) |c| {
         if (c == '\n') {
