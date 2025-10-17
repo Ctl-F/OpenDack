@@ -8,7 +8,7 @@ const LINE_STATUS_REG: u16 = 5; // bit 5 (0x20) is set when THR is empty
 const MODEM_STATUS_REG: u16 = 6;
 const SCRATCH_REG: u16 = 7;
 
-const hal = @import("hal/x86_64.zig");
+const hal = @import("hal.zig").HardwareLayer;
 const io = hal.io;
 
 pub fn init_com1() void {

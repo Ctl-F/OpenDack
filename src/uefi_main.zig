@@ -1,27 +1,7 @@
 const std = @import("std");
 const uefi = std.os.uefi;
 
-const log = @import("log.zig");
-
-const long_string = " 0) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
-    " 1) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
-    " 2) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
-    " 3) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
-    " 4) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
-    " 5) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
-    " 6) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
-    " 7) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
-    " 8) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
-    " 9) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
-    "10) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
-    "11) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
-    "12) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
-    "13) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
-    "14) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
-    "15) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
-    "16) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
-    "17) This is a really very long string........\r\nand it will continue for ever and ever (not really)\r\n" ++
-    "18) And this is the end...\r\n";
+const stdio = @import("io.zig");
 
 pub export fn EfiMain(
     image_handle: uefi.Handle,
@@ -29,25 +9,31 @@ pub export fn EfiMain(
 ) uefi.Status {
     _ = image_handle;
 
-    log.init(.{
+    stdio.init(.{
         .serial = true,
         .stdout = true,
-    }, sys.con_out.?);
+        .stdin = true,
+    }, .{
+        .uefiIn = sys.con_in,
+        .uefiOut = sys.con_out,
+        .boot = sys.boot_services,
+    });
 
-    log.write("Hello UEFI\r\n");
-    log.write("Press any key to continue...\r\n");
+    stdio.write("Hello UEFI\r\n") catch return .aborted;
+    stdio.write("Press any key to continue...\r\n") catch return .aborted;
 
-    log.write(long_string);
+    stdio.write("Enter your name: ") catch return .aborted;
 
-    var input = sys.con_in.?;
-    _ = input.reset(false);
+    var buffer = [_]u8{0} ** 512;
+    const count = stdio.read(&buffer) catch return .aborted;
 
-    var key_event: uefi.protocol.SimpleTextInput.Key.Input = undefined;
-
-    while (true) {
-        const status = input.readKeyStroke(&key_event);
-        if (status == .success) break;
-        _ = sys.boot_services.?.stall(50000);
+    if (count == 0) {
+        stdio.write("Alright then, keep your secrets\r\n") catch return .aborted;
+        return .success;
     }
+
+    stdio.print("Hello {s}\r\n", .{buffer[0..count]});
+
+    _ = stdio.get_key() catch return .aborted;
     return .success;
 }

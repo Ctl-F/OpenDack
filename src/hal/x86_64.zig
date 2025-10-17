@@ -16,3 +16,7 @@ pub const io = struct {
         );
     }
 };
+
+pub inline fn pause() void {
+    asm volatile ("pause");
+}
