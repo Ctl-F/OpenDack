@@ -11,11 +11,16 @@ pub const IOFlags = packed struct {
 pub const Stdio = struct {
     in: std.Io.Reader,
     out: std.Io.Writer,
-    err: std.Io.Writer,
+    _out_buff: [STD_BUFFER_SIZE]u8 = undefined,
 };
+
+pub const STD_BUFFER_SIZE: usize = 1024;
 
 pub const IO = struct {
     const This = @This();
+    const WVTable = std.Io.Writer.VTable{
+        .drain = v_uefiout_drain,
+    };
 
     flags: IOFlags,
     stdio: ?Stdio,
@@ -48,13 +53,16 @@ pub const IO = struct {
             },
             .UEFI => |uInfo| {
                 this.stdio = .{
-                    .out = std.Io.Writer{}, // TODO: Finish implementing stdio to conform to zig 0.15.2
+                    .out = std.Io.Writer{
+                        .buffer = &.{},
+                        .vtable = &This.WVTable,
+                    },
                 };
             },
         }
     }
 
-    fn v_uefiout_write(bytes: []const u8) usize {}
+    fn v_uefiout_drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {}
 };
 
 // const std = @import("std");
@@ -106,31 +114,31 @@ pub const IO = struct {
 //     systemServices = services;
 // }
 
-// pub fn debug_assert(cond: bool, message: []const u8) void {
-//     if (cond) return;
+pub fn debug_assert(cond: bool, message: []const u8) void {
+    if (cond) return;
 
-//     switch (@import("builtin").mode) {
-//         .Debug, .ReleaseSafe => {
-//             if (!logMode.serial or !logMode._has_init) {
-//                 init(
-//                     .{
-//                         .serial = true,
-//                     },
-//                     .{
-//                         .boot = null,
-//                         .uefiIn = null,
-//                         .uefiOut = null,
-//                     },
-//                 );
-//             }
-//             write(message) catch unreachable;
-//             unreachable;
-//         },
-//         else => {
-//             unreachable;
-//         },
-//     }
-// }
+    switch (@import("builtin").mode) {
+        .Debug, .ReleaseSafe => {
+            if (!logMode.serial or !logMode._has_init) {
+                init(
+                    .{
+                        .serial = true,
+                    },
+                    .{
+                        .boot = null,
+                        .uefiIn = null,
+                        .uefiOut = null,
+                    },
+                );
+            }
+            write(message) catch unreachable;
+            unreachable;
+        },
+        else => {
+            unreachable;
+        },
+    }
+}
 
 // fn v_write(context: void, bytes: []const u8) WriterError!usize {
 //     _ = context;
