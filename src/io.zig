@@ -2,6 +2,7 @@ const std = @import("std");
 const serial = @import("serial.zig");
 const hal = @import("hal.zig").HardwareLayer;
 const runtime = @import("runtime.zig");
+const uefi_io = @import("uefi_io.zig");
 
 pub const IOFlags = packed struct {
     Com1Enable: bool,
@@ -12,15 +13,16 @@ pub const Stdio = struct {
     in: std.Io.Reader,
     out: std.Io.Writer,
     _out_buff: [STD_BUFFER_SIZE]u8 = undefined,
+    _uefi_io: ?struct {
+        uefi_in: uefi_io.BufferedUefiReader,
+        uefi_out: uefi_io.BufferedUefiWriter,
+    } = null,
 };
 
 pub const STD_BUFFER_SIZE: usize = 1024;
 
 pub const IO = struct {
     const This = @This();
-    const WVTable = std.Io.Writer.VTable{
-        .drain = v_uefiout_drain,
-    };
 
     flags: IOFlags,
     stdio: ?Stdio,
@@ -52,17 +54,16 @@ pub const IO = struct {
                 return error.NotAvailableForBareMetal;
             },
             .UEFI => |uInfo| {
-                this.stdio = .{
-                    .out = std.Io.Writer{
-                        .buffer = &.{},
-                        .vtable = &This.WVTable,
-                    },
+                _ = uInfo; // TODO: Finish hooking this up to UEFI_IO
+                this.stdio = Stdio{
+                    .in = undefined,
+                    .out = undefined,
+                    ._out_buff = undefined,
+                    ._uefi_io = null,
                 };
             },
         }
     }
-
-    fn v_uefiout_drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {}
 };
 
 // const std = @import("std");
@@ -114,31 +115,31 @@ pub const IO = struct {
 //     systemServices = services;
 // }
 
-pub fn debug_assert(cond: bool, message: []const u8) void {
-    if (cond) return;
+// pub fn debug_assert(cond: bool, message: []const u8) void {
+//     if (cond) return;
 
-    switch (@import("builtin").mode) {
-        .Debug, .ReleaseSafe => {
-            if (!logMode.serial or !logMode._has_init) {
-                init(
-                    .{
-                        .serial = true,
-                    },
-                    .{
-                        .boot = null,
-                        .uefiIn = null,
-                        .uefiOut = null,
-                    },
-                );
-            }
-            write(message) catch unreachable;
-            unreachable;
-        },
-        else => {
-            unreachable;
-        },
-    }
-}
+//     switch (@import("builtin").mode) {
+//         .Debug, .ReleaseSafe => {
+//             if (!logMode.serial or !logMode._has_init) {
+//                 init(
+//                     .{
+//                         .serial = true,
+//                     },
+//                     .{
+//                         .boot = null,
+//                         .uefiIn = null,
+//                         .uefiOut = null,
+//                     },
+//                 );
+//             }
+//             write(message) catch unreachable;
+//             unreachable;
+//         },
+//         else => {
+//             unreachable;
+//         },
+//     }
+// }
 
 // fn v_write(context: void, bytes: []const u8) WriterError!usize {
 //     _ = context;

@@ -76,6 +76,25 @@ pub const RuntimeState = struct {
             },
         }
     }
+
+    pub fn sleep(this: This, microseconds: usize) bool {
+        switch (this.firmware) {
+            .None => {
+                io.write("Sleep not implemented for bare metal execution") catch unreachable;
+                unreachable;
+            },
+            .UEFI => |uinfo| {
+                if (uinfo.table.boot_services) |bst| {
+                    try bst.stall(microseconds) catch return false;
+                } else {
+                    io.write("Unable to access UEFI boot services") catch {};
+                    return false;
+                }
+
+                return true;
+            },
+        }
+    }
 };
 
 pub fn init(image_handle: uefi.Handle, sys: *uefi.tables.SystemTable, flags: ServiceFlags) RuntimeState {
