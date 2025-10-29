@@ -10,9 +10,8 @@ pub const IOFlags = packed struct {
 };
 
 pub const Stdio = struct {
-    in: std.Io.Reader,
-    out: std.Io.Writer,
-    _out_buff: [STD_BUFFER_SIZE]u8 = undefined,
+    in: *std.Io.Reader,
+    out: *std.Io.Writer,
     _uefi_io: ?struct {
         uefi_in: uefi_io.BufferedUefiReader,
         uefi_out: uefi_io.BufferedUefiWriter,
@@ -54,13 +53,25 @@ pub const IO = struct {
                 return error.NotAvailableForBareMetal;
             },
             .UEFI => |uInfo| {
-                _ = uInfo; // TODO: Finish hooking this up to UEFI_IO
                 this.stdio = Stdio{
                     .in = undefined,
                     .out = undefined,
-                    ._out_buff = undefined,
-                    ._uefi_io = null,
+                    ._uefi_io = .{
+                        .uefi_in = uefi_io.BufferedUefiReader.init(uInfo.table.con_in.?, .{
+                            .echo = null,
+                            .echoConfig = .{},
+                            .runtimeHandle = rState,
+                            .truncateToAscii = true,
+                        }),
+                        .uefi_out = uefi_io.BufferedUefiWriter.init(
+                            &(.{0} ** 1024),
+                            uInfo.table.con_out.?,
+                        ),
+                    },
                 };
+
+                this.stdio.?.in = &this.stdio.?._uefi_io.?.uefi_in.interface;
+                this.stdio.?.out = &this.stdio.?._uefi_io.?.uefi_out.interface;
             },
         }
     }
