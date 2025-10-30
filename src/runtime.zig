@@ -1,12 +1,6 @@
 const std = @import("std");
 const uefi = std.os.uefi;
-const io = @import("io.zig");
-const serial = @import("serial.zig");
-
-pub const Firmware = union(enum) {
-    None,
-    UEFI: UefiInfo,
-};
+pub const io = @import("io.zig");
 
 pub const UefiInfo = struct {
     image_handle: uefi.Handle,
@@ -14,97 +8,41 @@ pub const UefiInfo = struct {
 };
 
 pub const RuntimeError = error{
-    NotAvailableForUefi,
-    NotAvailableForBareMetal,
+    NotAvailable,
 };
 
 pub const ServiceFlags = packed struct {
-    Com1Enable: bool,
+    Com1Enable: bool = true,
 };
 
 pub const RuntimeState = struct {
     const This = @This();
 
-    firmware: Firmware,
     flags: ServiceFlags,
+    uefi: ?UefiInfo,
 
     pub fn shutdown(this: This) noreturn {
-        switch (this.firmware) {
-            .None => {
-                io.write("Shutdown not implemented for bare metal execution") catch unreachable;
-                unreachable;
-            },
-            .UEFI => |uinfo| {
-                uinfo.table.runtime_services.resetSystem(
-                    .shutdown,
-                    .success,
-                    null,
-                );
-            },
-        }
-    }
-
-    pub fn init_stdio(this: This) RuntimeError!void {
-        switch (this.firmware) {
-            .None => {
-                if (this.flags.Com1Enable) {
-                    io.init(.{
-                        .serial = true,
-                        .stdin = false,
-                        .stdout = false,
-                    }, .{
-                        .boot = null,
-                        .uefiIn = null,
-                        .uefiOut = null,
-                    });
-                    return;
-                }
-                return RuntimeError.NotAvailableForBareMetal;
-            },
-            .UEFI => |_uefi| {
-                io.init(.{
-                    .serial = this.flags.Com1Enable,
-                    .stdin = true,
-                    .stdout = true,
-                }, .{
-                    .boot = _uefi.table.boot_services,
-                    .uefiIn = _uefi.table.con_in,
-                    .uefiOut = _uefi.table.con_out,
-                });
-
-                return;
-            },
-        }
+        _ = this;
+        std.debug.panic("Shutdown not supported\n", .{});
     }
 
     pub fn sleep(this: This, microseconds: usize) bool {
-        switch (this.firmware) {
-            .None => {
-                io.write("Sleep not implemented for bare metal execution") catch unreachable;
-                unreachable;
-            },
-            .UEFI => |uinfo| {
-                if (uinfo.table.boot_services) |bst| {
-                    try bst.stall(microseconds) catch return false;
-                } else {
-                    io.write("Unable to access UEFI boot services") catch {};
-                    return false;
-                }
-
-                return true;
-            },
-        }
+        _ = this;
+        _ = microseconds;
+        std.debug.panic("Sleep not supported\n", .{});
     }
 };
 
-pub fn init(image_handle: uefi.Handle, sys: *uefi.tables.SystemTable, flags: ServiceFlags) RuntimeState {
+pub fn init(handle: uefi.Handle, table: *uefi.tables.SystemTable, flags: ServiceFlags) RuntimeState {
+    if (flags.Com1Enable) {
+        io.serial.init_com1();
+    }
+
     return RuntimeState{
-        .firmware = .{
-            .UEFI = .{
-                .image_handle = image_handle,
-                .table = sys,
-            },
-        },
         .flags = flags,
+        .uefi = .{
+            .image_handle = handle,
+            .table = table,
+        },
     };
 }

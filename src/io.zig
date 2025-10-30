@@ -1,81 +1,78 @@
 const std = @import("std");
-const serial = @import("serial.zig");
-const hal = @import("hal.zig").HardwareLayer;
-const runtime = @import("runtime.zig");
-const uefi_io = @import("uefi_io.zig");
+pub const serial = @import("serial.zig");
 
-pub const IOFlags = packed struct {
-    Com1Enable: bool,
-    StdIO: bool,
-};
+// pub const IOFlags = packed struct {
+//     Com1Enable: bool,
+//     StdIO: bool,
+// };
 
-pub const Stdio = struct {
-    in: *std.Io.Reader,
-    out: *std.Io.Writer,
-    _uefi_io: ?struct {
-        uefi_in: uefi_io.BufferedUefiReader,
-        uefi_out: uefi_io.BufferedUefiWriter,
-    } = null,
-};
+// pub const Stdio = struct {
+//     in: *std.Io.Reader,
+//     out: *std.Io.Writer,
+//     _uefi_io: ?struct {
+//         uefi_in: uefi_io.BufferedUefiReader,
+//         uefi_out: uefi_io.BufferedUefiWriter,
+//     } = null,
+// };
 
-pub const STD_BUFFER_SIZE: usize = 1024;
+// pub const STD_BUFFER_SIZE: usize = 1024;
 
-pub const IO = struct {
-    const This = @This();
+// pub const IO = struct {
+//     const This = @This();
 
-    flags: IOFlags,
-    stdio: ?Stdio,
+//     flags: IOFlags,
+//     stdio: ?Stdio,
 
-    pub fn init(flags: IOFlags, rState: *runtime.RuntimeState) !This {
-        var _this = This{
-            .flags = flags,
-        };
+//     pub fn init(flags: IOFlags, rState: *runtime.RuntimeState) !This {
+//         var _this = This{
+//             .flags = flags,
+//         };
 
-        if (flags.Com1Enable) {
-            init_serial();
-        }
+//         if (flags.Com1Enable) {
+//             init_serial();
+//         }
 
-        if (flags.StdIO) {
-            try _this.init_stdio(rState);
-        }
+//         if (flags.StdIO) {
+//             try _this.init_stdio(rState);
+//         }
 
-        return _this;
-    }
+//         return _this;
+//     }
 
-    fn init_serial() void {
-        serial.init_com1();
-    }
+//     fn init_serial() void {
+//         serial.init_com1();
+//     }
 
-    fn init_stdio(this: *This, rState: *runtime.RuntimeState) !void {
-        switch (rState.firmware) {
-            .None => {
-                serial.write_ascii("stdio not implemented for bare metal execution");
-                return error.NotAvailableForBareMetal;
-            },
-            .UEFI => |uInfo| {
-                this.stdio = Stdio{
-                    .in = undefined,
-                    .out = undefined,
-                    ._uefi_io = .{
-                        .uefi_in = uefi_io.BufferedUefiReader.init(uInfo.table.con_in.?, .{
-                            .echo = null,
-                            .echoConfig = .{},
-                            .runtimeHandle = rState,
-                            .truncateToAscii = true,
-                        }),
-                        .uefi_out = uefi_io.BufferedUefiWriter.init(
-                            &(.{0} ** 1024),
-                            uInfo.table.con_out.?,
-                        ),
-                    },
-                };
+//     fn init_stdio(this: *This, rState: *runtime.RuntimeState) !void {
+//         switch (rState.firmware) {
+//             .None => {
+//                 serial.write_ascii("stdio not implemented for bare metal execution");
+//                 return error.NotAvailableForBareMetal;
+//             },
+//             .UEFI => |uInfo| {
+//                 this.stdio = Stdio{
+//                     .in = undefined,
+//                     .out = undefined,
+//                     ._uefi_io = .{
+//                         .uefi_in = uefi_io.BufferedUefiReader.init(uInfo.table.con_in.?, .{
+//                             .echo = null,
+//                             .echoConfig = .{},
+//                             .runtimeHandle = rState,
+//                             .truncateToAscii = true,
+//                         }),
+//                         .uefi_out = uefi_io.BufferedUefiWriter.init(
+//                             &(.{0} ** 1024),
+//                             uInfo.table.con_out.?,
+//                         ),
+//                     },
+//                 };
 
-                this.stdio.?.in = &this.stdio.?._uefi_io.?.uefi_in.interface;
-                this.stdio.?.out = &this.stdio.?._uefi_io.?.uefi_out.interface;
-            },
-        }
-    }
-};
+//                 this.stdio.?.in = &this.stdio.?._uefi_io.?.uefi_in.interface;
+//                 this.stdio.?.out = &this.stdio.?._uefi_io.?.uefi_out.interface;
+//             },
+//         }
+//     }
+// };
 
 // const std = @import("std");
 // const serial = @import("serial.zig");
