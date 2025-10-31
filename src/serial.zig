@@ -31,7 +31,9 @@ pub fn init_com1() void {
 }
 
 fn serial_write_char(c: u8) void {
-    while ((io.in8(COM1 + LINE_STATUS_REG) & 0x20) == 0) {}
+    while ((io.in8(COM1 + LINE_STATUS_REG) & 0x20) == 0) {
+        hal.pause();
+    }
     io.out8(COM1, c);
 }
 
