@@ -73,3 +73,43 @@ pub inline fn ticks() u64 {
     // and since by definition x must be bound to EAX and y must be bound to EBX
     // for the instruction, we can avoid the extra mov instructions.
 }
+
+pub const CpuidResult = packed struct {
+    eax: u32,
+    ebx: u32,
+    ecx: u32,
+    edx: u32,
+};
+
+pub fn cpuid(eax_in: u32, ecx_in: u32) CpuidResult {
+    var eax: u32 = undefined;
+    var ebx: u32 = undefined;
+    var ecx: u32 = undefined;
+    var edx: u32 = undefined;
+
+    asm volatile ("cpuid"
+        : [_] "={eax}" (eax),
+          [_] "={ebx}" (ebx),
+          [_] "={ecx}" (ecx),
+          [_] "={edx}" (edx),
+        : [_] "{eax}" (eax_in),
+          [_] "{ecx}" (ecx_in),
+        : .{ .memory = true });
+
+    return .{ .eax = eax, .ebx = ebx, .ecx = ecx, .edx = edx };
+}
+
+pub fn get_vendor_string(buffer: *align(@alignOf(u32)) [13]u8, metadata: ?*u32) void {
+    // impl with cpuid
+    const info = cpuid(0x00, 0x00);
+
+    if (metadata) |ptr| {
+        ptr.* = info.eax;
+    }
+
+    @memcpy(buffer[0..4], &@as([4]u8, @bitCast(info.ebx)));
+    @memcpy(buffer[4..8], &@as([4]u8, @bitCast(info.edx)));
+    @memcpy(buffer[8..12], &@as([4]u8, @bitCast(info.ecx)));
+
+    buffer[12] = 0;
+}

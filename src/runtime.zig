@@ -2,6 +2,7 @@ const std = @import("std");
 const uefi = std.os.uefi;
 pub const io = @import("io.zig");
 const hal = @import("hal.zig");
+const Host = @import("HostInfo.zig");
 
 pub const UefiInfo = struct {
     image_handle: uefi.Handle,
@@ -19,6 +20,7 @@ pub const ServiceFlags = packed struct {
 pub const RuntimeState = struct {
     const This = @This();
 
+    host_info: Host.HostInfo,
     flags: ServiceFlags,
     uefi: ?UefiInfo,
     _debug_buffer: [256]u8 = undefined,
@@ -73,8 +75,8 @@ pub const RuntimeState = struct {
                 last_block = block;
             }
 
-            if (splat != 0) {
-                for (0..splat) |_| {
+            if (splat > 1) {
+                for (1..splat) |_| {
                     count += last_block.len;
                     io.serial.write_ascii(last_block);
                 }
@@ -92,6 +94,7 @@ pub fn init(handle: uefi.Handle, table: *uefi.tables.SystemTable, flags: Service
 
     return RuntimeState{
         .flags = flags,
+        .host_info = Host.HostInfo.init(),
         .uefi = .{
             .image_handle = handle,
             .table = table,

@@ -1,16 +1,19 @@
 const std = @import("std");
 const uefi = std.os.uefi;
 
+const Host = @import("HostInfo.zig");
 const runtime = @import("runtime.zig");
 
 fn KernelInit(rState: *runtime.RuntimeState) !void {
     _ = rState;
-    //runtime.io.serial.init_com1();
 }
 
 fn KernelMain(rState: *runtime.RuntimeState) !void {
     //runtime.io.serial.write_ascii("Hello World\r\n");
-    rState.debug_print("Hello World\n", .{});
+    rState.debug_print("Vendor: [{s}]\nMaxLeafNode: {}\n", .{
+        &rState.host_info.vendor_string,
+        rState.host_info.max_basic_leaf,
+    });
 
     const gop: *uefi.protocol.GraphicsOutput = lookup: {
         if (rState.uefi) |efi| {
