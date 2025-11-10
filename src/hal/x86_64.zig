@@ -1,4 +1,5 @@
 // all x86_64 assembly implementations should go here
+const abstract = @import("../hal.zig");
 
 pub const io = struct {
     pub fn in8(port: u16) u8 {
@@ -112,4 +113,71 @@ pub fn get_vendor_string(buffer: *align(@alignOf(u32)) [13]u8, metadata: ?*u32) 
     @memcpy(buffer[8..12], &@as([4]u8, @bitCast(info.ecx)));
 
     buffer[12] = 0;
+}
+
+pub const ChipID = struct {
+    family: u8,
+    model: u8,
+    stepping: u8,
+    processor_type: u8,
+};
+
+pub fn get_chip_id(ext: bool, flags: abstract.FeatureFlags) ChipID {
+    const r = cpuid(1, 0);
+    const family_id: u8 = @truncate((r.eax >> 8) & 0xF);
+    const model_id: u8 = @truncate((r.eax >> 4) & 0xF);
+    const stepping: u8 = @truncate(r.eax & 0xF);
+    const processor_type: u8 = @truncate((r.eax >> 12) & 0x3);
+    const ext_model: u8 = @truncate((r.eax >> 16) & 0xF);
+    const ext_family: u8 = @truncate((r.eax >> 20) & 0xFF);
+
+    var family = family_id;
+    var model = model_id;
+    if (family_id == 0xF) {
+        family += ext_family;
+    }
+    if (family_id == 0x6 or family_id == 0xF) {
+        model += ext_model << 4;
+    }
+
+    flags.sse = (r.edx >> 25) & 1 != 0;
+    flags.sse2 = (r.edx >> 26) & 1 != 0;
+    flags.sse3 = (r.ecx >> 0) & 1 != 0;
+    flags.ssse3 = (r.ecx >> 9) & 1 != 0;
+    flags.sse4_1 = (r.ecx >> 19) & 1 != 0;
+    flags.sse4_2 = (r.ecx >> 20) & 1 != 0;
+    flags.avx = (r.ecx >> 28) & 1 != 0;
+
+    if (ext) {
+        const exr = cpuid(7, 0);
+
+        flags.avx2 = (exr.ebx >> 5) & 1 != 0;
+        flags.avx512f = (exr.ebx >> 16) & 1 != 0;
+    } else {
+        flags.avx2 = 0;
+        flags.avx512f = 0;
+    }
+
+    return .{
+        .family = family,
+        .model = model,
+        .stepping = stepping,
+        .processor_type = processor_type,
+    };
+}
+
+pub fn address_width(maxExtLeafCnt: u32, physical: *u8, virtual: *u8) void {
+    if (maxExtLeafCnt >= 0x80000008) {
+        const r = cpuid(0x80000008, 0);
+        physical.* = @truncate(r.eax & 0xFF);
+        virtual.* = @truncate((r.eax >> 8) & 0xFF);
+    } else {
+        physical.* = 36;
+        virtual.* = 48;
+    }
+}
+
+pub fn cpuid_brand_string(buffer: *align(@alignOf(u32)) [13]u8) void {
+    // TODO: Implement and bubble up
+    _ = buffer;
 }
