@@ -10,12 +10,19 @@ fn KernelInit(rState: *runtime.RuntimeState) !void {
 
 fn KernelMain(rState: *runtime.RuntimeState) !void {
     //runtime.io.serial.write_ascii("Hello World\r\n");
-    rState.debug_print("Vendor: [{s}]\nBrand: [{s}]\nMaxLeafNode: {}\nMaxExtNode: {}\n", .{
+    rState.debug_print("Vendor: [{s}]\nBrand: [{s}]\nMaxLeafNode: {x}\nMaxExtNode: {x}\n", .{
         &rState.host_info.vendor_string,
         &rState.host_info.brand,
         rState.host_info.max_basic_leaf,
         rState.host_info.max_extended_leaf,
     });
+
+    const ptr: [*]const u8 = @ptrCast(&rState.host_info.brand[0]);
+    var index: usize = 0;
+    while (ptr[index] != 0) : (index += 1) {
+        rState.debug_print("[{x}: \"{s}\"]", .{ ptr[index], &.{ptr[index]} });
+    }
+    rState.debug_print("\n", .{});
 
     rState.debug_print("Address:\n  Physical: {}\n  Linear: {}\n", .{
         rState.host_info.physical_address_bits,

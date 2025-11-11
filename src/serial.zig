@@ -58,8 +58,11 @@ pub fn write_int(comptime iTy: type, value: iTy) void {
     }
 
     var place: iTy = 10;
-    while (val >= place) : (place *= 10) {}
-    place /= 10;
+    while (true) {
+        const next = place * 10;
+        if (next > val or next < place) break; // prevent overflow
+        place = next;
+    }
 
     while (place > 0) : (place /= 10) {
         const digit = (val / place) % 10;

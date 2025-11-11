@@ -178,7 +178,6 @@ pub fn address_width(maxExtLeafCnt: u32, physical: *u8, virtual: *u8) void {
 }
 
 pub fn cpuid_brand_string(maxExtLeaf: u32, buffer: *align(@alignOf(u32)) [49]u8) void {
-    // TODO: Implement and bubble up
     if (maxExtLeaf < 0x80000004) {
         @memcpy(buffer[0..13], "NOTSUPPORTED" ++ [_]u8{0});
         return;
@@ -188,12 +187,31 @@ pub fn cpuid_brand_string(maxExtLeaf: u32, buffer: *align(@alignOf(u32)) [49]u8)
     // TODO: Fix
     const parts = [_]u32{ 0x80000002, 0x80000003, 0x80000004 };
     var i: usize = 0;
+    const serial = @import("../serial.zig");
+    serial.init_com1();
 
-    for (parts) |id| {
+    inline for (parts) |id| {
         const r = cpuid(id, 0);
-        const arr = [_]u32{ r.eax, r.ebx, r.ecx, r.edx };
-        for (arr) |v| {
-            @memcpy(buffer[i..][0..4], @as([*]const u8, @ptrCast(&v)));
+
+        serial.write_ascii("LEAF: ");
+        serial.write_int(u32, id);
+        serial.write_ascii("\nEAX: ");
+        serial.write_int(u32, r.eax);
+        serial.write_ascii("\nEBX: ");
+        serial.write_int(u32, r.ebx);
+        serial.write_ascii("\nECX: ");
+        serial.write_int(u32, r.ecx);
+        serial.write_ascii("\nEDX: ");
+        serial.write_int(u32, r.edx);
+        serial.write_ascii("\n\n");
+
+        inline for (&.{ r.eax, r.ebx, r.ecx, r.edx }) |reg| {
+            const bytes: [4]u8 = @bitCast(reg);
+
+            inline for (0..bytes.len) |idx| {
+                buffer[i..][idx] = bytes[idx];
+            }
+
             i += 4;
         }
     }
