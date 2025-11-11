@@ -40,14 +40,16 @@ pub const HostInfo = struct {
     pub fn init() @This() {
         const hal = @import("hal.zig");
         var instance: @This() = undefined;
-        var buffer: [13]u8 align(@alignOf(u32)) = undefined;
-        hal.vendor_string(&buffer, &instance.max_basic_leaf);
-        @memcpy(&instance.vendor_string, &buffer);
+        var buffer: [128]u8 align(@alignOf(u32)) = undefined;
+        hal.vendor_string(buffer[0..13], &instance.max_basic_leaf);
+        @memcpy(&instance.vendor_string, buffer[0..13]);
 
         hal.extension_count(&instance.max_extended_leaf);
 
         hal.chip_id(&instance);
         hal.address_width_bits(instance.max_extended_leaf, &instance.physical_address_bits, &instance.linear_address_bits);
+
+        hal.brand_string(instance.max_extended_leaf, &buffer);
 
         return instance;
     }

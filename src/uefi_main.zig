@@ -10,9 +10,16 @@ fn KernelInit(rState: *runtime.RuntimeState) !void {
 
 fn KernelMain(rState: *runtime.RuntimeState) !void {
     //runtime.io.serial.write_ascii("Hello World\r\n");
-    rState.debug_print("Vendor: [{s}]\nMaxLeafNode: {}\n", .{
+    rState.debug_print("Vendor: [{s}]\nBrand: [{s}]\nMaxLeafNode: {}\nMaxExtNode: {}\n", .{
         &rState.host_info.vendor_string,
+        &rState.host_info.brand,
         rState.host_info.max_basic_leaf,
+        rState.host_info.max_extended_leaf,
+    });
+
+    rState.debug_print("Address:\n  Physical: {}\n  Linear: {}\n", .{
+        rState.host_info.physical_address_bits,
+        rState.host_info.linear_address_bits,
     });
 
     const gop: *uefi.protocol.GraphicsOutput = lookup: {

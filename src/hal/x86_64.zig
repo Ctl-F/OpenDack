@@ -122,7 +122,7 @@ pub const ChipID = struct {
     processor_type: u8,
 };
 
-pub fn get_chip_id(ext: bool, flags: abstract.FeatureFlags) ChipID {
+pub fn get_chip_id(ext: bool, flags: *abstract.FeatureFlags) ChipID {
     const r = cpuid(1, 0);
     const family_id: u8 = @truncate((r.eax >> 8) & 0xF);
     const model_id: u8 = @truncate((r.eax >> 4) & 0xF);
@@ -154,8 +154,8 @@ pub fn get_chip_id(ext: bool, flags: abstract.FeatureFlags) ChipID {
         flags.avx2 = (exr.ebx >> 5) & 1 != 0;
         flags.avx512f = (exr.ebx >> 16) & 1 != 0;
     } else {
-        flags.avx2 = 0;
-        flags.avx512f = 0;
+        flags.avx2 = false;
+        flags.avx512f = false;
     }
 
     return .{
@@ -177,7 +177,25 @@ pub fn address_width(maxExtLeafCnt: u32, physical: *u8, virtual: *u8) void {
     }
 }
 
-pub fn cpuid_brand_string(buffer: *align(@alignOf(u32)) [13]u8) void {
+pub fn cpuid_brand_string(maxExtLeaf: u32, buffer: *align(@alignOf(u32)) [49]u8) void {
     // TODO: Implement and bubble up
-    _ = buffer;
+    if (maxExtLeaf < 0x80000004) {
+        @memcpy(buffer[0..13], "NOTSUPPORTED" ++ [_]u8{0});
+        return;
+    }
+
+    // THIS IS BROKEN:
+    // TODO: Fix
+    const parts = [_]u32{ 0x80000002, 0x80000003, 0x80000004 };
+    var i: usize = 0;
+
+    for (parts) |id| {
+        const r = cpuid(id, 0);
+        const arr = [_]u32{ r.eax, r.ebx, r.ecx, r.edx };
+        for (arr) |v| {
+            @memcpy(buffer[i..][0..4], @as([*]const u8, @ptrCast(&v)));
+            i += 4;
+        }
+    }
+    buffer[48] = 0;
 }

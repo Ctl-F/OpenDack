@@ -7,6 +7,23 @@ pub const HardwareLayer = switch (builtin.target.cpu.arch) {
     else => @compileError("Hardware abstraction layer not implemented for: " ++ builtin.target.cpu.arch.genericName()),
 };
 
+pub fn brand_string(maxExtLeaf: u32, buffer: []align(@alignOf(u32)) u8) void {
+    switch (builtin.target.cpu.arch) {
+        .x86_64 => {
+            if (buffer.len < 49) {
+                serial.init_com1();
+                serial.write_ascii("Buffer length is too small for x86_64 vendor_string.\n");
+                @trap();
+            }
+
+            HardwareLayer.cpuid_brand_string(maxExtLeaf, @ptrCast(buffer.ptr));
+        },
+        else => {
+            HardwareLayer.brand_string(maxExtLeaf, buffer);
+        },
+    }
+}
+
 pub fn vendor_string(buffer: []align(@alignOf(u32)) u8, metadata: ?*u32) void {
     switch (builtin.target.cpu.arch) {
         .x86_64 => {
@@ -25,7 +42,7 @@ pub fn vendor_string(buffer: []align(@alignOf(u32)) u8, metadata: ?*u32) void {
 pub fn extension_count(count: *u32) void {
     switch (builtin.target.cpu.arch) {
         .x86_64 => {
-            count.* = HardwareLayer.cpuid(0x80000000).eax;
+            count.* = HardwareLayer.cpuid(0x80000000, 0).eax;
         },
         else => {
             HardwareLayer.extension_count(count);
