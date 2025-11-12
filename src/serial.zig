@@ -8,6 +8,7 @@ const LINE_STATUS_REG: u16 = 5; // bit 5 (0x20) is set when THR is empty
 const MODEM_STATUS_REG: u16 = 6;
 const SCRATCH_REG: u16 = 7;
 
+const std = @import("std");
 const hal = @import("hal.zig").HardwareLayer;
 const io = hal.io;
 
@@ -38,6 +39,69 @@ fn serial_write_char(c: u8) void {
 }
 
 pub fn write_int(comptime iTy: type, value: iTy) void {
+    const ti = @typeInfo(iTy);
+    if (ti != .int) @compileError("Expected integer type");
+    const info = ti.int;
+
+    const is_signed = info.signedness == .signed;
+
+    // pick a wide unsigned accumulator (64-bit) so intermediate math can't overflow
+    const uval: u64 = if (is_signed) SVAL: {
+        // handle negative signed values safely
+        const signed_val = @as(i128, value);
+        break :SVAL if (signed_val < 0) @as(u64, -signed_val) else @as(u64, signed_val);
+    } else UVAL: {
+        break :UVAL @as(u64, value);
+    };
+
+    if (uval == 0) {
+        write_ascii(&.{'0'});
+        return;
+    }
+
+    // compute highest place (1, 10, 100, ...) without overflow using u64
+    var place: u64 = 1;
+    while (true) {
+        const next = place * 10;
+        if (next == 0 or next > uval) break;
+        place = next;
+    }
+
+    while (place != 0) : (place /= 10) {
+        const digit: u8 = @intCast((uval / place) % 10);
+        const ch: u8 = @as(u8, '0') + digit;
+        write_ascii(&.{ch});
+    }
+}
+
+pub fn write_hex(comptime iTy: type, value: iTy) void {
+    const info = @typeInfo(iTy);
+    if (info != .int) @compileError("Expected integer type");
+    const iInfo = info.int;
+
+    if (iInfo.signedness == .signed) {
+        @compileError("Please convert to an unsigned representation for hex display");
+    }
+
+    const width = iInfo.bits;
+    if (width % 4 != 0) {
+        @compileError("Integer width must be divisible by 4 (u8/u16/u32/u64)");
+    }
+
+    const hexChars = "0123456789ABCDEF";
+
+    // Print fixed width, MSB first (human readable, consistent across all CPUs)
+    var shift: usize = width - 4;
+    while (true) {
+        const nibble: u8 = @intCast((value >> @truncate(shift)) & 0xF);
+        const ch: u8 = hexChars[nibble];
+        write_ascii(&.{ch});
+        if (shift == 0) break;
+        shift -= 4;
+    }
+}
+
+pub fn write_int_old(comptime iTy: type, value: iTy) void {
     const info = switch (@typeInfo(iTy)) {
         .int => |iinfo| iinfo,
         else => @compileError("Expected integer type"),

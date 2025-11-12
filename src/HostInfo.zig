@@ -50,7 +50,7 @@ pub const HostInfo = struct {
         hal.address_width_bits(instance.max_extended_leaf, &instance.physical_address_bits, &instance.linear_address_bits);
 
         hal.brand_string(instance.max_extended_leaf, &buffer);
-
+        @memcpy(&instance.brand, buffer[0..instance.brand.len]);
         return instance;
     }
 };

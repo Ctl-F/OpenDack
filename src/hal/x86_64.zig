@@ -187,30 +187,17 @@ pub fn cpuid_brand_string(maxExtLeaf: u32, buffer: *align(@alignOf(u32)) [49]u8)
     // TODO: Fix
     const parts = [_]u32{ 0x80000002, 0x80000003, 0x80000004 };
     var i: usize = 0;
-    const serial = @import("../serial.zig");
-    serial.init_com1();
 
     inline for (parts) |id| {
         const r = cpuid(id, 0);
 
-        serial.write_ascii("LEAF: ");
-        serial.write_int(u32, id);
-        serial.write_ascii("\nEAX: ");
-        serial.write_int(u32, r.eax);
-        serial.write_ascii("\nEBX: ");
-        serial.write_int(u32, r.ebx);
-        serial.write_ascii("\nECX: ");
-        serial.write_int(u32, r.ecx);
-        serial.write_ascii("\nEDX: ");
-        serial.write_int(u32, r.edx);
-        serial.write_ascii("\n\n");
-
         inline for (&.{ r.eax, r.ebx, r.ecx, r.edx }) |reg| {
             const bytes: [4]u8 = @bitCast(reg);
 
-            inline for (0..bytes.len) |idx| {
-                buffer[i..][idx] = bytes[idx];
-            }
+            buffer[i] = bytes[0];
+            buffer[i + 1] = bytes[1];
+            buffer[i + 2] = bytes[2];
+            buffer[i + 3] = bytes[3];
 
             i += 4;
         }

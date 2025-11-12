@@ -17,13 +17,6 @@ fn KernelMain(rState: *runtime.RuntimeState) !void {
         rState.host_info.max_extended_leaf,
     });
 
-    const ptr: [*]const u8 = @ptrCast(&rState.host_info.brand[0]);
-    var index: usize = 0;
-    while (ptr[index] != 0) : (index += 1) {
-        rState.debug_print("[{x}: \"{s}\"]", .{ ptr[index], &.{ptr[index]} });
-    }
-    rState.debug_print("\n", .{});
-
     rState.debug_print("Address:\n  Physical: {}\n  Linear: {}\n", .{
         rState.host_info.physical_address_bits,
         rState.host_info.linear_address_bits,
