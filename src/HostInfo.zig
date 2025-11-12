@@ -1,4 +1,10 @@
 pub const HostInfo = struct {
+    // In practice the max of 3 should be enough, but
+    // technically this is open-ended so we'll keep 6 slots available
+    // since we aren't technically hurting for memory
+    const MAX_SUPPORTED_TOPOLOGY_LEVEL_COUNT: usize = 6;
+    const MAX_SUPPORTED_CACHE_INFO_COUNT: usize = 6;
+
     vendor_string: [13]u8,
     brand: [49]u8,
     max_basic_leaf: u32,
@@ -16,9 +22,9 @@ pub const HostInfo = struct {
     cores_per_package: usize,
     packages: usize,
     apic_id_width: u8,
-    x2apic_ids: []u32,
 
     // cpuid deterministic topology levels
+    topology_levels_buffer: [MAX_SUPPORTED_TOPOLOGY_LEVEL_COUNT]TopologyLevel,
     topology_levels: []TopologyLevel,
 
     // address width
@@ -26,6 +32,7 @@ pub const HostInfo = struct {
     linear_address_bits: u8,
 
     // caches (vector)
+    cache_buffer: [MAX_SUPPORTED_CACHE_INFO_COUNT]CacheInfo,
     caches: []CacheInfo,
 
     // feature flags
@@ -51,12 +58,56 @@ pub const HostInfo = struct {
 
         hal.brand_string(instance.max_extended_leaf, &buffer);
         @memcpy(&instance.brand, buffer[0..instance.brand.len]);
+
+        hal.detect_topology(&instance);
+
+        instance.caches = hal.detect_caches(&instance.cache_buffer);
+
         return instance;
+    }
+
+    // this is necesary becuase UEFI can (and will) relocate our HostInfo data
+    // and when this happens the slice length will still be correct but the pointer will not be
+    // so we just need to recalculate all of the slices using the new pointer location.
+    // not ideal but managable.
+    pub fn correct_for_relocation(this: *@This()) void {
+        this.topology_levels = this.topology_levels_buffer[0..this.topology_levels.len];
+        this.caches = this.cache_buffer[0..this.caches.len];
     }
 };
 
-pub const TopologyLevel = struct {};
-pub const CacheInfo = struct {};
+pub const TopologyLevel = struct {
+    level_number: u8,
+    level_type: enum(u8) { smt = 1, core = 2, _ },
+    shift_right: u8,
+    logical_count: u16,
+    x2apic_id: u32,
+};
+
+pub const CacheInfo = struct {
+    pub const Type = enum(u8) {
+        none = 0,
+        data = 1,
+        instruction = 2,
+        unified = 3,
+        _,
+
+        pub fn is_unknown(this: @This()) bool {
+            return @intFromEnum(this) > 3;
+        }
+    };
+
+    level: u8,
+    type: Type,
+    line_size: u16, // bytes per line
+    ways: u16, // associativity?
+    partitions: u16, // usually 1
+    sets: u32,
+    shared_logical: u16, // logical processors sharing this cache
+    size_bytes: usize, // derived total size
+    inclusive: bool, // true if cache includes lower levels
+    fully_associative: bool,
+};
 pub const FeatureFlags = packed struct {};
 pub const MemoryMapSource = struct {};
 pub const MemoryRegion = struct {};

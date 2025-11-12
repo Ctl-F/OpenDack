@@ -183,8 +183,6 @@ pub fn cpuid_brand_string(maxExtLeaf: u32, buffer: *align(@alignOf(u32)) [49]u8)
         return;
     }
 
-    // THIS IS BROKEN:
-    // TODO: Fix
     const parts = [_]u32{ 0x80000002, 0x80000003, 0x80000004 };
     var i: usize = 0;
 
@@ -194,13 +192,110 @@ pub fn cpuid_brand_string(maxExtLeaf: u32, buffer: *align(@alignOf(u32)) [49]u8)
         inline for (&.{ r.eax, r.ebx, r.ecx, r.edx }) |reg| {
             const bytes: [4]u8 = @bitCast(reg);
 
-            buffer[i] = bytes[0];
-            buffer[i + 1] = bytes[1];
-            buffer[i + 2] = bytes[2];
-            buffer[i + 3] = bytes[3];
+            inline for (0..4) |bidx| {
+                buffer[i + bidx] = bytes[bidx];
+            }
 
             i += 4;
         }
     }
     buffer[48] = 0;
+}
+
+pub const CoreTopologyMeta = struct {
+    logical_processors: usize,
+    smt_threads_per_core: usize,
+    cores_per_package: usize,
+    packages: usize,
+    apic_id_width: u8,
+};
+
+pub fn detect_topology(max_basic_leaf: u32, levels: []abstract.host.TopologyLevel, meta: *CoreTopologyMeta) []abstract.host.TopologyLevel {
+    if (max_basic_leaf >= 0x0B) {
+        var level: u32 = 0;
+        var count: usize = 0;
+
+        while (true) : (level += 1) {
+            const res = cpuid(0x0B, level);
+            if (res.ebx == 0 or count >= levels.len) break;
+
+            const _type: u8 = @intCast((res.ecx >> 8) & 0xFF);
+            const shift: u8 = @intCast(res.eax & 0x1F);
+            const _count: u16 = @intCast(res.ebx & 0xFFFF);
+
+            levels[count] = .{
+                .level_number = @intCast(level),
+                .level_type = @enumFromInt(_type),
+                .shift_right = shift,
+                .logical_count = _count,
+                .x2apic_id = res.edx,
+            };
+            count += 1;
+        }
+
+        if (count > 0) {
+            meta.smt_threads_per_core = levels[0].logical_count;
+            if (level > 1) {
+                const lvl1 = levels[1].logical_count;
+                if (meta.smt_threads_per_core != 0) {
+                    meta.cores_per_package = @as(usize, @intCast(lvl1)) / meta.smt_threads_per_core;
+                } else {
+                    meta.cores_per_package = 1;
+                }
+            } else {
+                meta.cores_per_package = 1;
+            }
+
+            meta.logical_processors = meta.smt_threads_per_core * meta.cores_per_package;
+            meta.packages = 1;
+
+            return levels[0..count];
+        }
+        // fall through to legacy method
+    }
+    // legacy method
+    const legr = cpuid(1, 0);
+    const has_htt = ((legr.edx >> 28) & 1) != 0;
+    const max_logical: usize = @intCast((legr.ebx >> 16) & 0xFF);
+
+    meta.logical_processors = if (has_htt and max_logical != 0) max_logical else 1;
+    meta.smt_threads_per_core = if (has_htt and meta.logical_processors > 1) 2 else 1;
+    meta.cores_per_package = meta.logical_processors / meta.smt_threads_per_core;
+    meta.packages = 1;
+    return &.{};
+}
+
+pub fn detect_caches(caches: []abstract.host.CacheInfo) []abstract.host.CacheInfo {
+    var index: u32 = 0;
+
+    while (true) : (index += 1) {
+        const res = cpuid(0x04, index);
+        const cache_type = res.eax & 0x1F;
+        if (cache_type == 0 or index > caches.len) break;
+
+        const level = (res.eax >> 5) & 0x7;
+        const line_size = (res.ebx & 0xFFF) + 1;
+        const partitions = ((res.ebx >> 12) & 0x3FF) + 1;
+        const ways = ((res.ebx >> 22) & 0x3FF) + 1;
+        const sets = res.ecx + 1;
+        const shared_logical = ((res.eax >> 14) & 0xFFF) + 1;
+
+        const inclusive = ((res.edx >> 1) & 1) != 0;
+        const fully_associative = ((res.eax >> 9) & 1) != 0;
+
+        caches[index] = .{
+            .level = @truncate(level),
+            .type = @enumFromInt(cache_type),
+            .line_size = @truncate(line_size),
+            .ways = @truncate(ways),
+            .sets = sets,
+            .partitions = @truncate(partitions),
+            .shared_logical = @truncate(shared_logical),
+            .size_bytes = @intCast(ways * partitions * line_size * sets),
+            .inclusive = inclusive,
+            .fully_associative = fully_associative,
+        };
+    }
+
+    return caches[0..index];
 }

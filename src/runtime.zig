@@ -87,12 +87,14 @@ pub const RuntimeState = struct {
     };
 };
 
-pub fn init(handle: uefi.Handle, table: *uefi.tables.SystemTable, flags: ServiceFlags) RuntimeState {
+var GLOBAL_STATIC_STATE: RuntimeState = undefined;
+
+pub fn init(handle: uefi.Handle, table: *uefi.tables.SystemTable, flags: ServiceFlags) *RuntimeState {
     if (flags.Com1Enable) {
         io.serial.init_com1();
     }
 
-    return RuntimeState{
+    GLOBAL_STATIC_STATE = RuntimeState{
         .flags = flags,
         .host_info = Host.HostInfo.init(),
         .uefi = .{
@@ -100,4 +102,6 @@ pub fn init(handle: uefi.Handle, table: *uefi.tables.SystemTable, flags: Service
             .table = table,
         },
     };
+
+    return &GLOBAL_STATIC_STATE;
 }

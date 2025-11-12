@@ -17,10 +17,31 @@ fn KernelMain(rState: *runtime.RuntimeState) !void {
         rState.host_info.max_extended_leaf,
     });
 
-    rState.debug_print("Address:\n  Physical: {}\n  Linear: {}\n", .{
+    rState.debug_print("Family: {}\nStepping: {}\nProcessor-Type: {}\nModel: {}\nAddress:\n  Physical: {}\n  Linear: {}\n", .{
+        rState.host_info.family,
+        rState.host_info.stepping,
+        rState.host_info.processor_type,
+        rState.host_info.model,
         rState.host_info.physical_address_bits,
         rState.host_info.linear_address_bits,
     });
+
+    for (rState.host_info.topology_levels) |level| {
+        rState.debug_print("TopologyLvl: {}\n - Type: {}\n - Count: {}\n", .{
+            level.level_number,
+            level.level_type,
+            level.logical_count,
+        });
+    }
+
+    for (rState.host_info.caches) |cache| {
+        rState.debug_print("Cache: {}\n - Type: {}\n - LineSize: {}\n - Size: {}\n", .{
+            cache.level,
+            cache.type,
+            cache.line_size,
+            cache.size_bytes,
+        });
+    }
 
     const gop: *uefi.protocol.GraphicsOutput = lookup: {
         if (rState.uefi) |efi| {
@@ -45,16 +66,6 @@ fn KernelMain(rState: *runtime.RuntimeState) !void {
         @as(u32, @intFromEnum(mode_info.pixel_format)),
     });
 
-    // runtime.io.serial.write_ascii("Resolution: ");
-    // runtime.io.serial.write_int(u32, mode_info.horizontal_resolution);
-    // runtime.io.serial.write_ascii("x");
-    // runtime.io.serial.write_int(u32, mode_info.vertical_resolution);
-    // runtime.io.serial.write_ascii(" -- Pixels Per Scanline: ");
-    // runtime.io.serial.write_int(u32, mode_info.pixels_per_scan_line);
-    // runtime.io.serial.write_ascii(" | PFMT: ");
-    // runtime.io.serial.write_int(u32, @intFromEnum(mode_info.pixel_format));
-    // runtime.io.serial.write_ascii("\r\n");
-
     const fb = gop.mode.frame_buffer_base;
     const stride = gop.mode.info.pixels_per_scan_line;
 
@@ -74,8 +85,10 @@ fn KernelMain(rState: *runtime.RuntimeState) !void {
 }
 
 pub export fn EfiMain(image_handle: uefi.Handle, sys: *uefi.tables.SystemTable) uefi.Status {
-    var services = runtime.init(image_handle, sys, .{ .Com1Enable = true });
-    KernelInit(&services) catch return .aborted;
-    KernelMain(&services) catch return .aborted;
+    const services = runtime.init(image_handle, sys, .{ .Com1Enable = true });
+    services.host_info.correct_for_relocation();
+
+    KernelInit(services) catch return .aborted;
+    KernelMain(services) catch return .aborted;
     return .success;
 }

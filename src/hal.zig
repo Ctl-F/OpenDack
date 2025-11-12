@@ -1,11 +1,26 @@
 const builtin = @import("builtin");
 const serial = @import("io.zig").serial;
-const HostInfo = @import("HostInfo.zig").HostInfo;
+pub const host = @import("HostInfo.zig");
+const HostInfo = host.HostInfo;
 
 pub const HardwareLayer = switch (builtin.target.cpu.arch) {
     .x86_64 => @import("hal/x86_64.zig"),
-    else => @compileError("Hardware abstraction layer not implemented for: " ++ builtin.target.cpu.arch.genericName()),
+    else => @compileError("Hardware Abstraction Layer not implemented for: " ++ builtin.target.cpu.arch.genericName()),
 };
+
+pub fn detect_topology(info: *HostInfo) void {
+    var metadata: HardwareLayer.CoreTopologyMeta = undefined;
+    info.topology_levels = HardwareLayer.detect_topology(info.max_basic_leaf, &info.topology_levels_buffer, &metadata);
+
+    info.logical_processors = metadata.logical_processors;
+    info.smt_threads_per_core = metadata.smt_threads_per_core;
+    info.cores_per_package = metadata.cores_per_package;
+    info.packages = metadata.packages;
+}
+
+pub fn detect_caches(cache_buffer: []host.CacheInfo) []host.CacheInfo {
+    return HardwareLayer.detect_caches(cache_buffer);
+}
 
 pub fn brand_string(maxExtLeaf: u32, buffer: []align(@alignOf(u32)) u8) void {
     switch (builtin.target.cpu.arch) {
