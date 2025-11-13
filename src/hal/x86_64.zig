@@ -219,9 +219,9 @@ pub fn detect_topology(max_basic_leaf: u32, levels: []abstract.host.TopologyLeve
             const res = cpuid(0x0B, level);
             if (res.ebx == 0 or count >= levels.len) break;
 
-            const _type: u8 = @intCast((res.ecx >> 8) & 0xFF);
-            const shift: u8 = @intCast(res.eax & 0x1F);
-            const _count: u16 = @intCast(res.ebx & 0xFFFF);
+            const _type: u8 = @truncate((res.ecx >> 8));
+            const shift: u8 = @truncate(res.eax & 0x1F);
+            const _count: u16 = @truncate(res.ebx);
 
             levels[count] = .{
                 .level_number = @intCast(level),
@@ -267,11 +267,11 @@ pub fn detect_topology(max_basic_leaf: u32, levels: []abstract.host.TopologyLeve
 
 pub fn detect_caches(caches: []abstract.host.CacheInfo) []abstract.host.CacheInfo {
     var index: u32 = 0;
-
+    var count: usize = 0;
     while (true) : (index += 1) {
         const res = cpuid(0x04, index);
         const cache_type = res.eax & 0x1F;
-        if (cache_type == 0 or index > caches.len) break;
+        if (cache_type == 0 or count > caches.len) break;
 
         const level = (res.eax >> 5) & 0x7;
         const line_size = (res.ebx & 0xFFF) + 1;
@@ -283,7 +283,7 @@ pub fn detect_caches(caches: []abstract.host.CacheInfo) []abstract.host.CacheInf
         const inclusive = ((res.edx >> 1) & 1) != 0;
         const fully_associative = ((res.eax >> 9) & 1) != 0;
 
-        caches[index] = .{
+        caches[count] = .{
             .level = @truncate(level),
             .type = @enumFromInt(cache_type),
             .line_size = @truncate(line_size),
@@ -295,7 +295,8 @@ pub fn detect_caches(caches: []abstract.host.CacheInfo) []abstract.host.CacheInf
             .inclusive = inclusive,
             .fully_associative = fully_associative,
         };
+        count += 1;
     }
 
-    return caches[0..index];
+    return caches[0..count];
 }
