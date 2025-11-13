@@ -268,35 +268,90 @@ pub fn detect_topology(max_basic_leaf: u32, levels: []abstract.host.TopologyLeve
 pub fn detect_caches(caches: []abstract.host.CacheInfo) []abstract.host.CacheInfo {
     var index: u32 = 0;
     var count: usize = 0;
-    while (true) : (index += 1) {
-        const res = cpuid(0x04, index);
-        const cache_type = res.eax & 0x1F;
-        if (cache_type == 0 or count > caches.len) break;
 
-        const level = (res.eax >> 5) & 0x7;
-        const line_size = (res.ebx & 0xFFF) + 1;
-        const partitions = ((res.ebx >> 12) & 0x3FF) + 1;
-        const ways = ((res.ebx >> 22) & 0x3FF) + 1;
-        const sets = res.ecx + 1;
-        const shared_logical = ((res.eax >> 14) & 0xFFF) + 1;
+    BREAK_FOR_LEGACY: {
+        while (true) : (index += 1) {
+            const res = cpuid(0x04, index);
 
-        const inclusive = ((res.edx >> 1) & 1) != 0;
-        const fully_associative = ((res.eax >> 9) & 1) != 0;
+            if (index == 0 and res.eax == 0 and res.ebx == 0 and res.ecx == 0 and res.edx == 0) {
+                break :BREAK_FOR_LEGACY;
+            }
 
-        caches[count] = .{
-            .level = @truncate(level),
-            .type = @enumFromInt(cache_type),
-            .line_size = @truncate(line_size),
-            .ways = @truncate(ways),
-            .sets = sets,
-            .partitions = @truncate(partitions),
-            .shared_logical = @truncate(shared_logical),
-            .size_bytes = @intCast(ways * partitions * line_size * sets),
-            .inclusive = inclusive,
-            .fully_associative = fully_associative,
-        };
-        count += 1;
+            debug_print_cpuid(0x04, index, res);
+
+            const cache_type = res.eax & 0x1F;
+            if (cache_type == 0 or count >= caches.len) break;
+
+            const level = (res.eax >> 5) & 0x7;
+            const line_size = (res.ebx & 0xFFF) + 1;
+            const partitions = ((res.ebx >> 12) & 0x3FF) + 1;
+            const ways = ((res.ebx >> 22) & 0x3FF) + 1;
+            const sets = res.ecx + 1;
+            const shared_logical = ((res.eax >> 14) & 0xFFF) + 1;
+
+            const inclusive = ((res.edx >> 1) & 1) != 0;
+            const fully_associative = ((res.eax >> 9) & 1) != 0;
+
+            caches[count] = .{
+                .level = @truncate(level),
+                .type = @enumFromInt(cache_type),
+                .line_size = @truncate(line_size),
+                .ways = @truncate(ways),
+                .sets = sets,
+                .partitions = @truncate(partitions),
+                .shared_logical = @truncate(shared_logical),
+                .size_bytes = @intCast(ways * partitions * line_size * sets),
+                .inclusive = inclusive,
+                .fully_associative = fully_associative,
+            };
+            count += 1;
+        }
+
+        return caches[0..count];
+    }
+    const legacy = cpuid(0x02, 0x00);
+    const bytes = [15]u8{
+        // excluded because manual states that this is "reserved" not the first descriptor -- @truncate(legacy.eax),
+        @truncate(legacy.eax >> 8),
+        @truncate(legacy.eax >> 16),
+        @truncate(legacy.eax >> 24),
+        @truncate(legacy.ebx),
+        @truncate(legacy.ebx >> 8),
+        @truncate(legacy.ebx >> 16),
+        @truncate(legacy.ebx >> 24),
+        @truncate(legacy.ecx),
+        @truncate(legacy.ecx >> 8),
+        @truncate(legacy.ecx >> 16),
+        @truncate(legacy.ecx >> 24),
+        @truncate(legacy.edx),
+        @truncate(legacy.edx >> 8),
+        @truncate(legacy.edx >> 16),
+        @truncate(legacy.edx >> 24),
+    };
+
+    // populate cache info from these bytes
+}
+
+fn debug_print_cpuid(param0: u32, param1: u32, r: CpuidResult) void {
+    const serial = @import("../serial.zig");
+    serial.write_ascii("--------CPUID--------\n");
+    serial.write_ascii("* PARAMS(");
+    serial.write_hex(u32, param0);
+    serial.write_ascii(", ");
+    serial.write_hex(u32, param1);
+    serial.write_ascii(")\n");
+    const names = [_][]const u8{ "EAX", "EBX", "ECX", "EDX" };
+    const values = [_]u32{ r.eax, r.ebx, r.ecx, r.edx };
+
+    inline for (0..names.len) |i| {
+        serial.write_ascii("* ");
+        serial.write_ascii(names[i]);
+        serial.write_ascii(": ");
+        serial.write_hex(u32, values[i]);
+        serial.write_ascii(" (");
+        serial.write_int(u32, values[i]);
+        serial.write_ascii(")\n");
     }
 
-    return caches[0..count];
+    serial.write_ascii("---------------------\n");
 }

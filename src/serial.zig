@@ -90,6 +90,8 @@ pub fn write_hex(comptime iTy: type, value: iTy) void {
 
     const hexChars = "0123456789ABCDEF";
 
+    write_ascii("0x");
+
     // Print fixed width, MSB first (human readable, consistent across all CPUs)
     var shift: usize = width - 4;
     while (true) {
