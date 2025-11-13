@@ -108,7 +108,26 @@ pub const CacheInfo = struct {
     inclusive: bool, // true if cache includes lower levels
     fully_associative: bool,
 };
-pub const FeatureFlags = packed struct {};
+pub const FeatureFlags = @import("hal.zig").FeatureFlags;
+
+pub const MemoryRegionType = enum(u8) {
+    free,
+    reserved,
+    firmware_reserved,
+    acpi,
+    mmio,
+    runtime_service_code,
+    runtime_service_data,
+    unusable,
+    persistent,
+    _,
+};
+
+pub const MemoryRegion = struct {
+    base: u64,
+    length: u64,
+    kind: MemoryRegionType,
+};
+
 pub const MemoryMapSource = struct {};
-pub const MemoryRegion = struct {};
 pub const HypervisorInfo = struct {};

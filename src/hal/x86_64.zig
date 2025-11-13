@@ -122,7 +122,7 @@ pub const ChipID = struct {
     processor_type: u8,
 };
 
-pub fn get_chip_id(ext: bool, flags: *abstract.FeatureFlags) ChipID {
+pub fn get_chip_id(ext: bool, max_extended_leaf: u32, flags: *abstract.FeatureFlags) ChipID {
     const r = cpuid(1, 0);
     const family_id: u8 = @truncate((r.eax >> 8) & 0xF);
     const model_id: u8 = @truncate((r.eax >> 4) & 0xF);
@@ -147,6 +147,25 @@ pub fn get_chip_id(ext: bool, flags: *abstract.FeatureFlags) ChipID {
     flags.sse4_1 = (r.ecx >> 19) & 1 != 0;
     flags.sse4_2 = (r.ecx >> 20) & 1 != 0;
     flags.avx = (r.ecx >> 28) & 1 != 0;
+
+    flags.apic = (r.edx >> 9) & 1 != 0;
+    flags.x2apic_enabled = (r.ecx >> 21) & 1 != 0;
+    flags.xsave = (r.ecx >> 26) & 1 != 0;
+    flags.osxsave = (r.ecx >> 27) & 1 != 0;
+    flags.tsc = (r.edx >> 4) & 1 != 0;
+
+    flags.hypervisor_present = (r.ecx >> 31) & 1 != 0;
+
+    if (max_extended_leaf >= 0x80000001) {
+        const ext1_r = cpuid(0x80000001, 0);
+        flags.long_mode = (ext1_r.edx >> 29) & 1 != 0;
+    }
+
+    if (max_extended_leaf >= 0x80000007) {
+        const ext_r = cpuid(0x80000007, 0);
+
+        flags.invariant_tsc = (ext_r.edx >> 8) & 1 != 0;
+    }
 
     if (ext) {
         const exr = cpuid(7, 0);
@@ -210,7 +229,7 @@ pub const CoreTopologyMeta = struct {
     apic_id_width: u8,
 };
 
-pub fn detect_topology(max_basic_leaf: u32, levels: []abstract.host.TopologyLevel, meta: *CoreTopologyMeta) []abstract.host.TopologyLevel {
+pub fn detect_topology(max_basic_leaf: u32, x2apic_enable: bool, levels: []abstract.host.TopologyLevel, meta: *CoreTopologyMeta) []abstract.host.TopologyLevel {
     if (max_basic_leaf >= 0x0B) {
         var level: u32 = 0;
         var count: usize = 0;
@@ -249,6 +268,8 @@ pub fn detect_topology(max_basic_leaf: u32, levels: []abstract.host.TopologyLeve
             meta.logical_processors = meta.smt_threads_per_core * meta.cores_per_package;
             meta.packages = 1;
 
+            meta.apic_id_width = compute_apic_id_width(levels[0..count], x2apic_enable);
+
             return levels[0..count];
         }
         // fall through to legacy method
@@ -262,7 +283,19 @@ pub fn detect_topology(max_basic_leaf: u32, levels: []abstract.host.TopologyLeve
     meta.smt_threads_per_core = if (has_htt and meta.logical_processors > 1) 2 else 1;
     meta.cores_per_package = meta.logical_processors / meta.smt_threads_per_core;
     meta.packages = 1;
+
+    meta.apic_id_width = compute_apic_id_width(&.{}, x2apic_enable);
+
     return &.{};
+}
+
+fn compute_apic_id_width(levels: []abstract.host.TopologyLevel, x2apic_supported: bool) u8 {
+    var max_id: u32 = 0;
+    for (levels) |level| {
+        max_id = @max(level.x2apic_id, max_id);
+    }
+    const highest_bit_index = @bitSizeOf(u32) - @clz(max_id);
+    return if (highest_bit_index != 0) highest_bit_index else (8 + 24 * @as(u8, @intFromBool(x2apic_supported)));
 }
 
 pub fn detect_caches(caches: []abstract.host.CacheInfo) []abstract.host.CacheInfo {
@@ -309,27 +342,11 @@ pub fn detect_caches(caches: []abstract.host.CacheInfo) []abstract.host.CacheInf
 
         return caches[0..count];
     }
-    const legacy = cpuid(0x02, 0x00);
-    const bytes = [15]u8{
-        // excluded because manual states that this is "reserved" not the first descriptor -- @truncate(legacy.eax),
-        @truncate(legacy.eax >> 8),
-        @truncate(legacy.eax >> 16),
-        @truncate(legacy.eax >> 24),
-        @truncate(legacy.ebx),
-        @truncate(legacy.ebx >> 8),
-        @truncate(legacy.ebx >> 16),
-        @truncate(legacy.ebx >> 24),
-        @truncate(legacy.ecx),
-        @truncate(legacy.ecx >> 8),
-        @truncate(legacy.ecx >> 16),
-        @truncate(legacy.ecx >> 24),
-        @truncate(legacy.edx),
-        @truncate(legacy.edx >> 8),
-        @truncate(legacy.edx >> 16),
-        @truncate(legacy.edx >> 24),
-    };
-
     // populate cache info from these bytes
+    const serial = @import("../serial.zig");
+    serial.init_com1();
+    serial.write_ascii("WARNING: Legacy Leaf[2] not implemented for Cache Info. Cache Info will be unavailable.\n");
+    return &.{};
 }
 
 fn debug_print_cpuid(param0: u32, param1: u32, r: CpuidResult) void {

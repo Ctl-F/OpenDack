@@ -43,6 +43,8 @@ fn KernelMain(rState: *runtime.RuntimeState) !void {
         });
     }
 
+    rState.debug_print("Logical Processors: {}\nFeatures: {}\n", .{ rState.host_info.logical_processors, rState.host_info.features });
+
     const gop: *uefi.protocol.GraphicsOutput = lookup: {
         if (rState.uefi) |efi| {
             if (efi.table.boot_services) |bs| {

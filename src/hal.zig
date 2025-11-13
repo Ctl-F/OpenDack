@@ -10,7 +10,7 @@ pub const HardwareLayer = switch (builtin.target.cpu.arch) {
 
 pub fn detect_topology(info: *HostInfo) void {
     var metadata: HardwareLayer.CoreTopologyMeta = undefined;
-    info.topology_levels = HardwareLayer.detect_topology(info.max_basic_leaf, &info.topology_levels_buffer, &metadata);
+    info.topology_levels = HardwareLayer.detect_topology(info.max_basic_leaf, info.features.x2apic_enabled, &info.topology_levels_buffer, &metadata);
 
     info.logical_processors = metadata.logical_processors;
     info.smt_threads_per_core = metadata.smt_threads_per_core;
@@ -80,8 +80,7 @@ pub fn address_width_bits(maxExtLeafCnt: u32, physical: *u8, virtual: *u8) void 
 pub fn chip_id(info: *HostInfo) void {
     switch (builtin.target.cpu.arch) {
         .x86_64 => {
-            var flags: FeatureFlags = undefined;
-            const chip_info = HardwareLayer.get_chip_id(info.max_basic_leaf > 6, &flags);
+            const chip_info = HardwareLayer.get_chip_id(info.max_basic_leaf > 6, info.max_extended_leaf, &info.features);
 
             info.family = chip_info.family;
             info.stepping = chip_info.stepping;
@@ -102,6 +101,12 @@ pub const FeatureFlags = packed struct {
     avx: bool,
     avx2: bool,
     avx512f: bool,
-    smx: bool,
-    vmx: bool,
+    apic: bool,
+    x2apic_enabled: bool,
+    tsc: bool,
+    invariant_tsc: bool,
+    xsave: bool,
+    osxsave: bool,
+    long_mode: bool,
+    hypervisor_present: bool,
 };
