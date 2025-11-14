@@ -31,6 +31,86 @@ pub fn init_com1() void {
     io.out8(COM1 + MODEM_CONTROL_REG, 0x0B);
 }
 
+const FmtSlice = union(enum) {
+    literal: []const u8,
+    placeholder: enum { string, int, hex },
+};
+
+pub fn write_message(comptime fmt: []const u8, args: anytype) void {
+    const argsType = @TypeOf(args);
+    const info = @typeInfo(argsType);
+
+    if (info != .@"struct") {
+        @compileError("Struct type expected as args parameter for serial.write_message");
+    }
+    const sInfo = info.@"struct";
+
+    comptime var fieldNum: usize = 0;
+    comptime var idx: usize = 0;
+
+    init_com1();
+
+    @setEvalBranchQuota(2000000);
+    inline while (idx < fmt.len) {
+        if (fmt[idx] == '{') {
+            idx += 1;
+            if (idx >= fmt.len) {
+                write_ascii("{");
+                break;
+            }
+            const sp = fmt[idx];
+            idx += 1;
+            if (idx >= fmt.len) {
+                write_ascii(&.{ "{", sp });
+                break;
+            }
+
+            if (fmt[idx] != '}') {
+                write_ascii(&.{ "{", sp });
+                continue;
+            }
+            idx += 1;
+
+            comptime std.debug.assert(fieldNum < sInfo.fields.len);
+            switch (sp) {
+                's' => {
+                    const next_arg = @field(args, sInfo.fields[fieldNum].name);
+                    write_ascii(next_arg);
+                },
+                'd' => {
+                    const next_arg = @field(args, sInfo.fields[fieldNum].name);
+                    const next_arg_t = @TypeOf(next_arg);
+                    comptime std.debug.assert(@typeInfo(next_arg_t) == .int);
+
+                    write_int(next_arg_t, next_arg);
+                },
+                'x' => {
+                    const next_arg = @field(args, sInfo.fields[fieldNum].name);
+                    const next_arg_t = @TypeOf(next_arg);
+                    comptime std.debug.assert(@typeInfo(next_arg_t) == .int);
+
+                    write_hex(next_arg_t, next_arg);
+                },
+                else => @compileError("Unknown format specifier: " ++ &.{sp}),
+            }
+            fieldNum += 1;
+        } else {
+            const start = idx;
+            inline while (idx < fmt.len and fmt[idx] != '{') : (idx += 1) {}
+            write_ascii(fmt[start..idx]);
+        }
+    }
+
+    if (fieldNum != sInfo.fields.len) {
+        @compileError("Too many arguments in serial.write_message");
+    }
+}
+
+pub fn runtime_error_norecover(comptime fmt: []const u8, args: anytype) noreturn {
+    write_message(fmt, args);
+    @trap();
+}
+
 fn serial_write_char(c: u8) void {
     while ((io.in8(COM1 + LINE_STATUS_REG) & 0x20) == 0) {
         hal.pause();

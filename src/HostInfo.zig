@@ -1,3 +1,6 @@
+const std = @import("std");
+const runtime = @import("runtime.zig");
+
 pub const HostInfo = struct {
     // In practice the max of 3 should be enough, but
     // technically this is open-ended so we'll keep 6 slots available
@@ -66,6 +69,16 @@ pub const HostInfo = struct {
         return instance;
     }
 
+    pub fn init_memory_map(this: *@This(), parent: *runtime.RuntimeState) !void {
+        if (parent.uefi) |efi| {
+            efi.table.boot_services.?.getMemoryMap(buffer: []u8)
+            _ = efi; //TODO: GetMemoryMap()???;
+            _ = this;
+        } else {
+            @import("serial.zig").runtime_error_norecover("WARNING: InitMemoryMap called from a non-uefi context.\nThis either points to a bug (double-init) or an invalid (unimplemented use case).\nPlease investigate.", .{});
+        }
+    }
+
     // this is necesary becuase UEFI can (and will) relocate our HostInfo data
     // and when this happens the slice length will still be correct but the pointer will not be
     // so we just need to recalculate all of the slices using the new pointer location.
@@ -110,24 +123,39 @@ pub const CacheInfo = struct {
 };
 pub const FeatureFlags = @import("hal.zig").FeatureFlags;
 
-pub const MemoryRegionType = enum(u8) {
+
+pub const PageSize = 4096;
+pub const Page = [PageSize]u8;
+
+pub const PageStatus = enum(u8){
     free,
-    reserved,
-    firmware_reserved,
-    acpi,
+    live,
     mmio,
-    runtime_service_code,
-    runtime_service_data,
+    mmdisk,
     unusable,
-    persistent,
-    _,
 };
 
-pub const MemoryRegion = struct {
-    base: u64,
-    length: u64,
-    kind: MemoryRegionType,
+pub const PageFlags = packed struct(u32) {
+    status: PageStatus, // 8 bits
+    read: bool,
+    write: bool,
+    execute: bool,
+    cache_enable: bool,
+    level: enum(u1) { kernel, user },
 };
 
-pub const MemoryMapSource = struct {};
+pub const PageDescriptor = struct {
+    reference_counter: u16,
+    status: PageStatus,
+};
+
+pub const VPage = struct {
+    backing_page: u64, // backing physical page
+    backing_offset: u64, // for use if we want to do disk mapping, otherwise keep this at zero
+    flags: PageFlags,
+    virtual_base: u64, // base offset in virtual address space
+};
+
+
+
 pub const HypervisorInfo = struct {};
