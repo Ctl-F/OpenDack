@@ -42,8 +42,7 @@ pub const HostInfo = struct {
     features: FeatureFlags,
 
     // memory & device hints
-    memory_map_source: MemoryMapSource,
-    memory_regions: []MemoryRegion,
+    memory_map: MemoryMap,
 
     hypervisor: ?HypervisorInfo,
 
@@ -71,9 +70,8 @@ pub const HostInfo = struct {
 
     pub fn init_memory_map(this: *@This(), parent: *runtime.RuntimeState) !void {
         if (parent.uefi) |efi| {
-            efi.table.boot_services.?.getMemoryMap(buffer: []u8)
-            _ = efi; //TODO: GetMemoryMap()???;
             _ = this;
+            _ = efi;
         } else {
             @import("serial.zig").runtime_error_norecover("WARNING: InitMemoryMap called from a non-uefi context.\nThis either points to a bug (double-init) or an invalid (unimplemented use case).\nPlease investigate.", .{});
         }
@@ -123,11 +121,10 @@ pub const CacheInfo = struct {
 };
 pub const FeatureFlags = @import("hal.zig").FeatureFlags;
 
-
 pub const PageSize = 4096;
 pub const Page = [PageSize]u8;
 
-pub const PageStatus = enum(u8){
+pub const PageStatus = enum(u8) {
     free,
     live,
     mmio,
@@ -141,6 +138,7 @@ pub const PageFlags = packed struct(u32) {
     write: bool,
     execute: bool,
     cache_enable: bool,
+    dirty: bool,
     level: enum(u1) { kernel, user },
 };
 
@@ -149,13 +147,13 @@ pub const PageDescriptor = struct {
     status: PageStatus,
 };
 
-pub const VPage = struct {
+pub const VirtualPageDescriptor = struct {
     backing_page: u64, // backing physical page
     backing_offset: u64, // for use if we want to do disk mapping, otherwise keep this at zero
     flags: PageFlags,
     virtual_base: u64, // base offset in virtual address space
 };
 
-
+pub const MemoryMap = struct {};
 
 pub const HypervisorInfo = struct {};
