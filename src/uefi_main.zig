@@ -4,11 +4,11 @@ const uefi = std.os.uefi;
 const Host = @import("HostInfo.zig");
 const runtime = @import("runtime.zig");
 
-fn KernelInit(rState: *runtime.RuntimeState) !void {
+fn BootInit(rState: *runtime.RuntimeState) !void {
     _ = rState;
 }
 
-fn KernelMain(rState: *runtime.RuntimeState) !void {
+fn BootMain(rState: *runtime.RuntimeState) !void {
     //runtime.io.serial.write_ascii("Hello World\r\n");
     rState.debug_print("Vendor: [{s}]\nBrand: [{s}]\nMaxLeafNode: {x}\nMaxExtNode: {x}\n", .{
         &rState.host_info.vendor_string,
@@ -81,16 +81,34 @@ fn KernelMain(rState: *runtime.RuntimeState) !void {
     const framebuffer: [*]volatile Pixel = @ptrFromInt(fb);
     framebuffer[10 * stride + 10] = Pixel{ .r = 255, .g = 0, .b = 255 };
 
-    while (true) {
-        @import("hal.zig").HardwareLayer.pause();
-    }
+    const sfs = FSLOOKUP: {
+        if (std.os.uefi.system_table.boot_services) |bs| {
+            const file_protocol = try bs.locateProtocol(std.os.uefi.protocol.SimpleFileSystem, null);
+
+            if (file_protocol) |prot| {
+                break :FSLOOKUP prot;
+            }
+        }
+        rState.debug_print("Unable to locate boot services", .{});
+        return error.NotAvailable;
+    };
+
+    const volume = try sfs.openVolume();
+    defer volume.close() catch unreachable;
+
+    const kernelImage = try volume.open("ODK/KERNEL/OPENDACK.ELF", .read, .{});
+    defer kernelImage.close() catch unreachable;
+
+    // TODO: load everything
+
+    @trap();
 }
 
 pub export fn EfiMain(image_handle: uefi.Handle, sys: *uefi.tables.SystemTable) uefi.Status {
     const services = runtime.init(image_handle, sys, .{ .Com1Enable = true });
     services.host_info.correct_for_relocation();
 
-    KernelInit(services) catch return .aborted;
-    KernelMain(services) catch return .aborted;
+    BootInit(services) catch return .aborted;
+    BootMain(services) catch return .aborted;
     return .success;
 }

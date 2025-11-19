@@ -1,5 +1,8 @@
 const std = @import("std");
 const runtime = @import("runtime.zig");
+const serial = @import("serial.zig");
+
+const NUM_AVAIABLE_EXTRA_VPAGES = 1024;
 
 pub const HostInfo = struct {
     // In practice the max of 3 should be enough, but
@@ -70,11 +73,87 @@ pub const HostInfo = struct {
 
     pub fn init_memory_map(this: *@This(), parent: *runtime.RuntimeState) !void {
         if (parent.uefi) |efi| {
-            _ = this;
-            _ = efi;
+            if (efi.table.boot_services) |bs| {
+                const memInfo = try bs.getMemoryMapInfo();
+
+                const page_count = memInfo.len;
+                const uefi_buffer_len = page_count * memInfo.descriptor_size;
+                const uefi_mm_buffer: []align(std.os.uefi.tables.MemoryDescriptor) u8 = bs.allocatePool(.loader_data, uefi_buffer_len) catch error.NotAvailable;
+
+                const memorySlice = try bs.getMemoryMap(uefi_mm_buffer);
+                var msIter = memorySlice.iterator();
+                var num_pages: usize = 0;
+                for (msIter.next()) |desc| {
+                    num_pages += desc.number_of_pages;
+                }
+
+                this.memory_map = undefined;
+
+                const totalSpace = num_pages * @sizeOf(PageDescriptor);
+                // we might not always need this +1, but it helps us to at least verify that if we don't fit cleanly onto
+                // a page, we have one extra to fit whatever extra descriptors we need.
+                const kernelMapPageCount = (totalSpace / PageSize) + 1;
+                const kernelMapVPageCount = (num_pages + NUM_AVAIABLE_EXTRA_VPAGES) * @sizeOf(VirtualPageDescriptor) + 1;
+
+                this.memory_map.physical_page_buffer = @ptrCast(@alignCast(try bs.allocatePages(
+                    std.os.uefi.tables.AllocateLocation.any, // ???
+                    std.os.uefi.tables.MemoryType.conventional_memory, // ???
+                    kernelMapPageCount,
+                )));
+                errdefer bs.freePages(this.memory_map.physical_page_buffer) catch unreachable;
+
+                this.memory_map.virtual_page_buffer = @ptrCast(@alignCast(try bs.allocatePages(
+                    std.os.uefi.tables.AllocateLocation.any,
+                    std.os.uefi.tables.MemoryType.conventional_memory,
+                    kernelMapVPageCount,
+                )));
+                errdefer bs.freePages(this.memory_map.virtual_page_buffer) catch unreachable;
+
+                const updatedSlice = try bs.getMemoryMap(uefi_mm_buffer);
+                var updatedIter = updatedSlice.iterator();
+
+                for (updatedIter.next()) |desc| {
+                    const info = convert_memory_type(desc.type);
+                    const page_start_idx = desc.physical_start / PageSize;
+
+                    for (0..desc.number_of_pages) |offset| {
+                        this.memory_map.physical_page_buffer[page_start_idx + offset].reference_counter = 0;
+                        this.memory_map.physical_page_buffer[page_start_idx + offset].status = info.kind;
+
+                        // how to tell if descriptor is "live" or mapped?
+                        // is it if virtual_start != 0?? virtual_start != 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF??
+                        // attribute field?
+                    }
+                }
+            } else {
+                serial.runtime_error_norecover("WARNING: Boot services are unavailable. Memory initialization cannot proceed.\n", .{});
+            }
         } else {
-            @import("serial.zig").runtime_error_norecover("WARNING: InitMemoryMap called from a non-uefi context.\nThis either points to a bug (double-init) or an invalid (unimplemented use case).\nPlease investigate.", .{});
+            serial.runtime_error_norecover("WARNING: InitMemoryMap called from a non-uefi context.\nThis either points to a bug (double-init) or an invalid (unimplemented use case).\nPlease investigate.", .{});
         }
+    }
+
+    fn convert_memory_type(@"type": std.os.uefi.tables.MemoryType) struct { kind: PageStatus, purpose: MemoryPurpose, level: PermissionLevel, flags: BootPageFlags } {
+        const UefiMemT = std.os.uefi.tables.MemoryType;
+
+        return switch (@"type") {
+            UefiMemT.reserved_memory_type => .{ .reserved, .none, .kernel, .{ .persist = true, .acpi = .none } },
+            UefiMemT.loader_code => .{ .live, .instruction, .kernel, .{ .persist = false, .acpi = .none } },
+            UefiMemT.loader_data => .{ .live, .data, .kernel, .{ .persist = false, .acpi = .none } },
+            UefiMemT.boot_services_code => .{ .live, .instruction, .kernel, .{ .persist = false, .acpi = .none } },
+            UefiMemT.boot_services_data => .{ .live, .data, .kernel, .{ .persist = false, .acpi = .none } },
+            UefiMemT.runtime_services_code => .{ .live, .instruction, .kernel, .{ .persist = true, .acpi = .none } },
+            UefiMemT.runtime_services_data => .{ .live, .data, .kernel, .{ .persist = true, .acpi = .none } },
+            UefiMemT.conventional_memory => .{ .free, .none, .kernel, .{ .persist = false, .acpi = .none } }, // since this is free the Kernel/User flag doesn't mean anything
+            UefiMemT.unusable_memory => .{ .unusable, .none, .kernel, .{ .persist = true, .acpi = .none } },
+            UefiMemT.memory_mapped_io, UefiMemT.memory_mapped_port_space => .{ .mmio, .unspecified, .kernel, .{ .persist = true, .acpi = .none } },
+            UefiMemT.pal_code => .{ .reserved, .instruction, .kernel, .{ .persist = true, .acpi = .none } },
+            UefiMemT.persistent_memory => .{ .reserved, .unspecified, .kernel, .{ .persist = true, .acpi = .none } },
+            UefiMemT.unaccepted_memory => .{ .unusable, .none, .kernel, .{ .persist = true, .acpi = .none } },
+            UefiMemT.acpi_reclaim_memory => .{ .live, .data, .kernel, .{ .persist = false, .acpi = .reclaim } },
+            UefiMemT.acpi_memory_nvs => .{ .reserved, .unspecified, .kernel, .{ .persist = true, .acpi = .nvs } },
+            else => .{ .unusable, .none, .kernel, .{ .persist = true, .acpi = .none } },
+        };
     }
 
     // this is necesary becuase UEFI can (and will) relocate our HostInfo data
@@ -95,21 +174,27 @@ pub const TopologyLevel = struct {
     x2apic_id: u32,
 };
 
+pub const MemoryPurpose = enum(u8) {
+    unspecified = 255,
+    none = 0,
+    data = 1,
+    instruction = 2,
+    unified = 3,
+    _,
+
+    pub fn is_unknown(this: @This()) bool {
+        return @intFromEnum(this) > 3;
+    }
+};
+
+pub const BootPageFlags = packed struct {
+    persist: bool,
+    acpi: enum { none, reclaim, nvs },
+};
+
 pub const CacheInfo = struct {
-    pub const Type = enum(u8) {
-        none = 0,
-        data = 1,
-        instruction = 2,
-        unified = 3,
-        _,
-
-        pub fn is_unknown(this: @This()) bool {
-            return @intFromEnum(this) > 3;
-        }
-    };
-
     level: u8,
-    type: Type,
+    type: MemoryPurpose,
     line_size: u16, // bytes per line
     ways: u16, // associativity?
     partitions: u16, // usually 1
@@ -124,22 +209,35 @@ pub const FeatureFlags = @import("hal.zig").FeatureFlags;
 pub const PageSize = 4096;
 pub const Page = [PageSize]u8;
 
+/// difference between live and reserved:
+/// live can be freed if you have the same permission level:
+/// .{ .live, .kernel } => can be freed if you are kernel
+/// .{ .live, .user } => can be freed if you are user or kernel
+/// reserved cannot be freed, but is still considered live
+/// .{ .reserved, * } => cannot be freed
 pub const PageStatus = enum(u8) {
     free,
     live,
+    reserved,
     mmio,
     mmdisk,
     unusable,
 };
 
+pub const PermissionLevel = enum(u1) {
+    kernel,
+    user,
+};
+
 pub const PageFlags = packed struct(u32) {
     status: PageStatus, // 8 bits
+    purpose: MemoryPurpose, // 8 bits
     read: bool,
     write: bool,
     execute: bool,
     cache_enable: bool,
     dirty: bool,
-    level: enum(u1) { kernel, user },
+    level: PermissionLevel,
 };
 
 pub const PageDescriptor = struct {
@@ -154,6 +252,9 @@ pub const VirtualPageDescriptor = struct {
     virtual_base: u64, // base offset in virtual address space
 };
 
-pub const MemoryMap = struct {};
+pub const MemoryMap = struct {
+    physical_page_buffer: []PageDescriptor,
+    virtual_page_buffer: []VirtualPageDescriptor,
+};
 
 pub const HypervisorInfo = struct {};

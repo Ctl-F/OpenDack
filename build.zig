@@ -10,26 +10,51 @@ pub fn build(b: *std.Build) void {
     });
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe_mod = b.createModule(.{
+    const boot_mod = b.createModule(.{
         .root_source_file = b.path("src/uefi_main.zig"),
         .optimize = optimize,
         .target = target,
     });
 
-    const exe = b.addExecutable(.{
-        .name = "OpenDack",
-        .root_module = exe_mod,
+    const boot = b.addExecutable(.{
+        .name = "OpenDackBoot",
+        .root_module = boot_mod,
     });
 
-    b.installArtifact(exe);
+    b.installArtifact(boot);
+
+    const kernel_mod = b.createModule(.{
+        .root_source_file = b.path("src/kernel_main.zig"),
+        .optimize = optimize,
+        .target = b.standardTargetOptions(.{
+            .default_target = .{
+                .cpu_arch = .x86_64,
+                .os_tag = .freestanding,
+                .abi = .gnu,
+            },
+        }),
+    });
+
+    const kernel = b.addExecutable(.{
+        .name = "OpenDack",
+        .root_module = kernel_mod,
+    });
 
     const copy_step = b.addSystemCommand(&.{
         "cp",
     });
-    copy_step.addArtifactArg(exe);
+    copy_step.addArtifactArg(boot);
     copy_step.addArg("root/EFI/BOOT/BOOTX64.EFI");
 
-    copy_step.step.dependOn(&exe.step);
+    copy_step.step.dependOn(&boot.step);
+
+    const kernel_copy_step = b.addSystemCommand(*.{
+        "cp",
+    });
+    kernel_copy_step.addArtifactArg(kernel);
+    kernel_copy_step.addArg("root/ODK/KERNEL/OPENDACK.ELF");
+
+    kernel_copy_step.step.dependOn(&kernel.step);
 
     const run = b.addSystemCommand(&.{
         "qemu-system-x86_64",
@@ -43,6 +68,7 @@ pub fn build(b: *std.Build) void {
     });
 
     run.step.dependOn(&copy_step.step);
+    run.step.dependOn(&kernel_copy_step.step);
 
     const run_step = b.step("run", "Run UEFI in QEMU");
 
