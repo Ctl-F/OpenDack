@@ -72,85 +72,123 @@ pub const HostInfo = struct {
     }
 
     pub fn init_memory_map(this: *@This(), parent: *runtime.RuntimeState) !void {
-        if (parent.uefi) |efi| {
-            if (efi.table.boot_services) |bs| {
-                const memInfo = try bs.getMemoryMapInfo();
+        if (!parent.uefi) {
+            serial.runtime_error_norecover("WARNING: InitMemoryMap called from a non-uefi context.\nThis either points to a bug (double-init) or an invalid (unimplemented use case).\nPlease investigate.", .{});
+        }
 
-                const page_count = memInfo.len;
-                const uefi_buffer_len = page_count * memInfo.descriptor_size;
-                const uefi_mm_buffer: []align(std.os.uefi.tables.MemoryDescriptor) u8 = bs.allocatePool(.loader_data, uefi_buffer_len) catch error.NotAvailable;
+        const bs = parent.uefi.?.table.boot_services orelse {
+            serial.runtime_error_norecover("WARNING: Boot services are unavailable. Memory initialization cannot proceed.\n", .{});
+        };
 
-                const memorySlice = try bs.getMemoryMap(uefi_mm_buffer);
-                var msIter = memorySlice.iterator();
-                var num_pages: usize = 0;
-                for (msIter.next()) |desc| {
-                    num_pages += desc.number_of_pages;
-                }
+        // grab metadata about MemoryMap
+        const mem_info = try bs.getMemoryMapInfo();
 
-                this.memory_map = undefined;
+        const descriptor_count = mem_info.len;
+        const uefi_buffer_len = descriptor_count * mem_info.descriptor_size;
 
-                const totalSpace = num_pages * @sizeOf(PageDescriptor);
-                // we might not always need this +1, but it helps us to at least verify that if we don't fit cleanly onto
-                // a page, we have one extra to fit whatever extra descriptors we need.
-                const kernelMapPageCount = (totalSpace / PageSize) + 1;
-                const kernelMapVPageCount = (num_pages + NUM_AVAIABLE_EXTRA_VPAGES) * @sizeOf(VirtualPageDescriptor) + 1;
+        // allocate a buffer for a COPY of UEFI MemoryMap
+        const uefi_mm_buffer: []align(std.os.uefi.tables.MemoryDescriptor) u8 = try bs.allocatePool(.loader_data, uefi_buffer_len);
+        defer bs.freePool(uefi_mm_buffer.ptr) catch {};
 
-                this.memory_map.physical_page_buffer = @ptrCast(@alignCast(try bs.allocatePages(
-                    std.os.uefi.tables.AllocateLocation.any, // ???
-                    std.os.uefi.tables.MemoryType.conventional_memory, // ???
-                    kernelMapPageCount,
-                )));
-                errdefer bs.freePages(this.memory_map.physical_page_buffer) catch unreachable;
+        // get copy of map into buffer
+        var memory_slice = try bs.getMemoryMap(uefi_mm_buffer);
 
-                this.memory_map.virtual_page_buffer = @ptrCast(@alignCast(try bs.allocatePages(
-                    std.os.uefi.tables.AllocateLocation.any,
-                    std.os.uefi.tables.MemoryType.conventional_memory,
-                    kernelMapVPageCount,
-                )));
-                errdefer bs.freePages(this.memory_map.virtual_page_buffer) catch unreachable;
+        // iterate to total up all of the pages
+        // switched to counting in a block like this
+        // so that we can reuse some of these names in the next iteration
+        const num_pages = ITER: {
+            var counter: usize = 0;
+            var iter = memory_slice.iterator();
 
-                const updatedSlice = try bs.getMemoryMap(uefi_mm_buffer);
-                var updatedIter = updatedSlice.iterator();
+            while (iter.next()) |desc| {
+                counter += @intCast(desc.number_of_pages);
+            }
 
-                for (updatedIter.next()) |desc| {
-                    const info = convert_memory_type(desc.type);
-                    const page_start_idx = desc.physical_start / PageSize;
+            break :ITER counter;
+        };
 
-                    for (0..desc.number_of_pages) |offset| {
-                        this.memory_map.physical_page_buffer[page_start_idx + offset].reference_counter = 0;
-                        this.memory_map.physical_page_buffer[page_start_idx + offset].status = info.kind;
+        const phys_desc_bytes = num_pages * @sizeOf(PageDescriptor);
+        const phys_desc_pages = std.math.divCeil(usize, phys_desc_bytes, PageSize) catch unreachable; // only errors out if PageSize should be zero
 
-                        // how to tell if descriptor is "live" or mapped?
-                        // is it if virtual_start != 0?? virtual_start != 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF??
-                        // attribute field?
+        const virt_desc_bytes = (num_pages + NUM_AVAIABLE_EXTRA_VPAGES) * @sizeOf(VirtualPageDescriptor);
+        const virt_desc_pages = std.math.divCeil(usize, virt_desc_bytes, PageSize) catch unreachable;
+
+        this.memory_map.physical_page_buffer = @ptrCast(@alignCast(try bs.allocatePages(
+            std.os.uefi.tables.AllocateLocation.any, // ???
+            std.os.uefi.tables.MemoryType.loader_data, // ???
+            phys_desc_pages,
+        )));
+        errdefer bs.freePages(this.memory_map.physical_page_buffer) catch {};
+
+        this.memory_map.virtual_page_buffer = @ptrCast(@alignCast(try bs.allocatePages(
+            std.os.uefi.tables.AllocateLocation.any,
+            std.os.uefi.tables.MemoryType.loader_data,
+            virt_desc_pages,
+        )));
+        errdefer bs.freePages(this.memory_map.virtual_page_buffer) catch {};
+
+        const live_ptrs: []OpaqueRange = &.{
+            .{
+                .start_address = @intFromPtr(this.memory_map.physical_page_buffer.ptr),
+                .end_address = (@as(u64, @intFromPtr(this.memory_map.physical_page_buffer.ptr)) + this.memory_map.physical_page_buffer.len * @sizeOf(PageDescriptor)),
+            },
+            .{
+                .start_address = @intFromPtr(this.memory_map.virtual_page_buffer.ptr),
+                .end_address = (@as(u64, @intFromPtr(this.memory_map.virtual_page_buffer.ptr)) + this.memory_map.virtual_page_buffer.len * @sizeOf(VirtualPageDescriptor)),
+            },
+        };
+
+        memory_slice = try bs.getMemoryMap(uefi_mm_buffer);
+        var map_iterator = memory_slice.iterator();
+
+        while (map_iterator.next()) |desc| {
+            const info = convert_memory_type(desc.type);
+            const page_start_idx = desc.physical_start / PageSize;
+
+            for (0..desc.number_of_pages) |offset| {
+                const page_ptr = &this.memory_map.physical_page_buffer[page_start_idx + offset];
+
+                page_ptr.reference_counter = if (info.flags.persist) 1 else 0;
+                page_ptr.status = info.kind;
+
+                if (info.kind == .conventional) {
+                    for (live_ptrs) |ptr| {
+                        if (ptr.in_page(@intFromPtr(page_ptr))) {
+                            page_ptr.reference_counter += 1;
+                        }
                     }
                 }
-            } else {
-                serial.runtime_error_norecover("WARNING: Boot services are unavailable. Memory initialization cannot proceed.\n", .{});
             }
-        } else {
-            serial.runtime_error_norecover("WARNING: InitMemoryMap called from a non-uefi context.\nThis either points to a bug (double-init) or an invalid (unimplemented use case).\nPlease investigate.", .{});
         }
     }
 
-    fn convert_memory_type(@"type": std.os.uefi.tables.MemoryType) struct { kind: PageStatus, purpose: MemoryPurpose, level: PermissionLevel, flags: BootPageFlags } {
+    const OpaqueRange = struct {
+        start_address: u64,
+        end_address: u64,
+
+        inline fn in_page(range: @This(), page_address: u64) bool {
+            return (range.start_address <= page_address and page_address < range.end_address);
+        }
+    };
+
+    fn convert_memory_type(@"type": std.os.uefi.tables.MemoryType) struct { kind: PageType, purpose: StorageType, level: PermissionLevel, flags: BootPageFlags } {
         const UefiMemT = std.os.uefi.tables.MemoryType;
 
         return switch (@"type") {
             UefiMemT.reserved_memory_type => .{ .reserved, .none, .kernel, .{ .persist = true, .acpi = .none } },
-            UefiMemT.loader_code => .{ .live, .instruction, .kernel, .{ .persist = false, .acpi = .none } },
-            UefiMemT.loader_data => .{ .live, .data, .kernel, .{ .persist = false, .acpi = .none } },
-            UefiMemT.boot_services_code => .{ .live, .instruction, .kernel, .{ .persist = false, .acpi = .none } },
-            UefiMemT.boot_services_data => .{ .live, .data, .kernel, .{ .persist = false, .acpi = .none } },
-            UefiMemT.runtime_services_code => .{ .live, .instruction, .kernel, .{ .persist = true, .acpi = .none } },
-            UefiMemT.runtime_services_data => .{ .live, .data, .kernel, .{ .persist = true, .acpi = .none } },
-            UefiMemT.conventional_memory => .{ .free, .none, .kernel, .{ .persist = false, .acpi = .none } }, // since this is free the Kernel/User flag doesn't mean anything
+            UefiMemT.loader_code => .{ .conventional, .instruction, .kernel, .{ .persist = false, .acpi = .none } },
+            UefiMemT.loader_data => .{ .conventional, .data, .kernel, .{ .persist = false, .acpi = .none } },
+            UefiMemT.boot_services_code => .{ .conventional, .instruction, .kernel, .{ .persist = false, .acpi = .none } },
+            UefiMemT.boot_services_data => .{ .conventional, .data, .kernel, .{ .persist = false, .acpi = .none } },
+            UefiMemT.runtime_services_code => .{ .conventional, .instruction, .kernel, .{ .persist = true, .acpi = .none } },
+            UefiMemT.runtime_services_data => .{ .conventional, .data, .kernel, .{ .persist = true, .acpi = .none } },
+            UefiMemT.conventional_memory => .{ .conventional, .none, .kernel, .{ .persist = false, .acpi = .none } }, // since this is free the Kernel/User flag doesn't mean anything
             UefiMemT.unusable_memory => .{ .unusable, .none, .kernel, .{ .persist = true, .acpi = .none } },
             UefiMemT.memory_mapped_io, UefiMemT.memory_mapped_port_space => .{ .mmio, .unspecified, .kernel, .{ .persist = true, .acpi = .none } },
             UefiMemT.pal_code => .{ .reserved, .instruction, .kernel, .{ .persist = true, .acpi = .none } },
             UefiMemT.persistent_memory => .{ .reserved, .unspecified, .kernel, .{ .persist = true, .acpi = .none } },
             UefiMemT.unaccepted_memory => .{ .unusable, .none, .kernel, .{ .persist = true, .acpi = .none } },
-            UefiMemT.acpi_reclaim_memory => .{ .live, .data, .kernel, .{ .persist = false, .acpi = .reclaim } },
+            UefiMemT.acpi_reclaim_memory => .{ .conventional, .data, .kernel, .{ .persist = false, .acpi = .reclaim } },
             UefiMemT.acpi_memory_nvs => .{ .reserved, .unspecified, .kernel, .{ .persist = true, .acpi = .nvs } },
             else => .{ .unusable, .none, .kernel, .{ .persist = true, .acpi = .none } },
         };
@@ -174,7 +212,7 @@ pub const TopologyLevel = struct {
     x2apic_id: u32,
 };
 
-pub const MemoryPurpose = enum(u8) {
+pub const StorageType = enum(u8) {
     unspecified = 255,
     none = 0,
     data = 1,
@@ -194,7 +232,7 @@ pub const BootPageFlags = packed struct {
 
 pub const CacheInfo = struct {
     level: u8,
-    type: MemoryPurpose,
+    type: StorageType,
     line_size: u16, // bytes per line
     ways: u16, // associativity?
     partitions: u16, // usually 1
@@ -215,9 +253,8 @@ pub const Page = [PageSize]u8;
 /// .{ .live, .user } => can be freed if you are user or kernel
 /// reserved cannot be freed, but is still considered live
 /// .{ .reserved, * } => cannot be freed
-pub const PageStatus = enum(u8) {
-    free,
-    live,
+pub const PageType = enum(u8) {
+    conventional,
     reserved,
     mmio,
     mmdisk,
@@ -230,19 +267,21 @@ pub const PermissionLevel = enum(u1) {
 };
 
 pub const PageFlags = packed struct(u32) {
-    status: PageStatus, // 8 bits
-    purpose: MemoryPurpose, // 8 bits
+    status: PageType, // 8 bits
+    purpose: StorageType, // 8 bits
     read: bool,
     write: bool,
     execute: bool,
     cache_enable: bool,
     dirty: bool,
     level: PermissionLevel,
+    reserved: u10,
 };
 
 pub const PageDescriptor = struct {
+    physical_base_addr: u64,
     reference_counter: u16,
-    status: PageStatus,
+    status: PageType,
 };
 
 pub const VirtualPageDescriptor = struct {
@@ -255,6 +294,76 @@ pub const VirtualPageDescriptor = struct {
 pub const MemoryMap = struct {
     physical_page_buffer: []PageDescriptor,
     virtual_page_buffer: []VirtualPageDescriptor,
+    virtual_page_allocator: SimpleAllocator(VirtualPageDescriptor, 1024),
 };
+
+pub fn SimpleAllocator(comptime entity_t: type, comptime free_stack_size: usize) type {
+    return struct {
+        const This = @This();
+
+        backing_buffer: []entity_t,
+        head: usize,
+        free_slots: [free_stack_size]usize,
+        free_slots_head: usize = 0,
+
+        pub fn init(buffer: []entity_t) This {
+            return .{
+                .backing_buffer = buffer,
+                .head = 0,
+                .free_slots = std.mem.zeroes([free_stack_size]usize),
+                .free_slots_head = 0,
+            };
+        }
+
+        pub fn alloc(this: *This) !*entity_t {
+            if (this.has_free_slot()) {
+                const index = this.pop_free() catch unreachable; // unreachable since we have checked if a free slot exists
+                return &this.backing_buffer[index];
+            }
+
+            if (this.head == this.backing_buffer.len) {
+                return error.OutOfMemory;
+            }
+
+            defer this.head += 1;
+            return &this.backing_buffer[this.head];
+        }
+
+        pub fn free(this: *This, addr: *entity_t) void {
+            var alloc_index: usize = 0;
+            while (alloc_index < this.backing_buffer.len and &this.backing_buffer[alloc_index] != addr) : (alloc_index += 1) {}
+
+            if (alloc_index == this.backing_buffer.len) {
+                // bad usage, but zig philosophy maintains that we dont throw an error.
+                // we will trap instead so that debug builds can be debugged
+                unreachable;
+            }
+
+            this.push_free_distinct(alloc_index);
+        }
+
+        inline fn has_free_slot(this: This) bool {
+            return this.free_slots_head > 0;
+        }
+
+        inline fn push_free_distinct(this: *This, index: usize) !void {
+            var idx: usize = 0;
+            while (idx < this.free_slots_head and this.free_slots[idx] != index) : (idx += 1) {}
+            try this.push_free(index);
+        }
+
+        inline fn push_free(this: *This, index: usize) !void {
+            if (this.free_slots_head == this.free_slots.len) return error.StackOverflow;
+            this.free_slots[this.free_slots_head] = index;
+            this.free_slots_head += 1;
+        }
+
+        inline fn pop_free(this: *This) !usize {
+            if (this.free_slots_head == 0) return error.StackUndeflow;
+            this.free_slots_head -= 1;
+            return this.free_slots[this.free_slots_head];
+        }
+    };
+}
 
 pub const HypervisorInfo = struct {};

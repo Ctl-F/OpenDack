@@ -81,23 +81,23 @@ fn BootMain(rState: *runtime.RuntimeState) !void {
     const framebuffer: [*]volatile Pixel = @ptrFromInt(fb);
     framebuffer[10 * stride + 10] = Pixel{ .r = 255, .g = 0, .b = 255 };
 
-    const sfs = FSLOOKUP: {
-        if (std.os.uefi.system_table.boot_services) |bs| {
-            const file_protocol = try bs.locateProtocol(std.os.uefi.protocol.SimpleFileSystem, null);
+    // const sfs = FSLOOKUP: {
+    //     if (std.os.uefi.system_table.boot_services) |bs| {
+    //         const file_protocol = try bs.locateProtocol(std.os.uefi.protocol.SimpleFileSystem, null);
 
-            if (file_protocol) |prot| {
-                break :FSLOOKUP prot;
-            }
-        }
-        rState.debug_print("Unable to locate boot services", .{});
-        return error.NotAvailable;
-    };
+    //         if (file_protocol) |prot| {
+    //             break :FSLOOKUP prot;
+    //         }
+    //     }
+    //     rState.debug_print("Unable to locate boot services", .{});
+    //     return error.NotAvailable;
+    // };
 
-    const volume = try sfs.openVolume();
-    defer volume.close() catch unreachable;
+    // const volume = try sfs.openVolume();
+    // defer volume.close() catch unreachable;
 
-    const kernelImage = try volume.open("ODK/KERNEL/OPENDACK.ELF", .read, .{});
-    defer kernelImage.close() catch unreachable;
+    // const kernelImage = try volume.open("ODK/KERNEL/OPENDACK.ELF", .read, .{});
+    // defer kernelImage.close() catch unreachable;
 
     // TODO: load everything
 

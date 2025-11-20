@@ -1,19 +1,25 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{
-        .default_target = .{
-            .cpu_arch = .x86_64,
-            .os_tag = .uefi,
-            .abi = .gnu, // TODO: Look into alternatives and pros and cons
-        },
-    });
+    //const standardTarget = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    const boot_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .uefi,
+        .abi = .msvc, // TODO: Look into alternatives and pros and cons
+    });
+
+    const kernel_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .freestanding,
+        .abi = .none,
+    });
 
     const boot_mod = b.createModule(.{
         .root_source_file = b.path("src/uefi_main.zig"),
         .optimize = optimize,
-        .target = target,
+        .target = boot_target,
     });
 
     const boot = b.addExecutable(.{
@@ -26,13 +32,7 @@ pub fn build(b: *std.Build) void {
     const kernel_mod = b.createModule(.{
         .root_source_file = b.path("src/kernel_main.zig"),
         .optimize = optimize,
-        .target = b.standardTargetOptions(.{
-            .default_target = .{
-                .cpu_arch = .x86_64,
-                .os_tag = .freestanding,
-                .abi = .gnu,
-            },
-        }),
+        .target = kernel_target,
     });
 
     const kernel = b.addExecutable(.{
@@ -48,7 +48,7 @@ pub fn build(b: *std.Build) void {
 
     copy_step.step.dependOn(&boot.step);
 
-    const kernel_copy_step = b.addSystemCommand(*.{
+    const kernel_copy_step = b.addSystemCommand(&.{
         "cp",
     });
     kernel_copy_step.addArtifactArg(kernel);
