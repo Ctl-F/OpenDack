@@ -106,59 +106,44 @@ pub const HostInfo = struct {
 
             break :ITER counter;
         };
+        const num_vpages = num_pages + NUM_AVAILABLE_EXTRA_VPAGES;
 
         const phys_desc_bytes = num_pages * @sizeOf(PageDescriptor);
         const phys_desc_pages = std.math.divCeil(usize, phys_desc_bytes, PageSize) catch unreachable; // only errors out if PageSize should be zero
 
-        const virt_desc_bytes = (num_pages + NUM_AVAIABLE_EXTRA_VPAGES) * @sizeOf(VirtualPageDescriptor);
+        const virt_desc_bytes = num_vpages * @sizeOf(VirtualPageDescriptor);
         const virt_desc_pages = std.math.divCeil(usize, virt_desc_bytes, PageSize) catch unreachable;
 
-        this.memory_map.physical_page_buffer = @ptrCast(@alignCast(try bs.allocatePages(
-            std.os.uefi.tables.AllocateLocation.any, // ???
-            std.os.uefi.tables.MemoryType.loader_data, // ???
-            phys_desc_pages,
-        )));
-        errdefer bs.freePages(this.memory_map.physical_page_buffer) catch {};
+        {
+            const tables = std.os.uefi.tables;
+            this.memory_map.physical_pages = try bs.allocatePages(
+                tables.AllocateLocation.any,
+                tables.MemoryType.loader_data,
+                physical_desc_pages,
+            );
+            errdefer bs.freePages(this.memory_map.physical_pages) catch {};
 
-        this.memory_map.virtual_page_buffer = @ptrCast(@alignCast(try bs.allocatePages(
-            std.os.uefi.tables.AllocateLocation.any,
-            std.os.uefi.tables.MemoryType.loader_data,
-            virt_desc_pages,
-        )));
-        errdefer bs.freePages(this.memory_map.virtual_page_buffer) catch {};
+            this.memory_map.virtual_pages = try bs.allocatePages(
+                tables.AllocateLocation.any,
+                tables.MemoryType.loader_data,
+                virtual_desc_pages,
+            );
+            errdefer bs.freePages(this.memory_map.virtual_pages) catch {};
+        }
 
-        const live_ptrs: []OpaqueRange = &.{
-            .{
-                .start_address = @intFromPtr(this.memory_map.physical_page_buffer.ptr),
-                .end_address = (@as(u64, @intFromPtr(this.memory_map.physical_page_buffer.ptr)) + this.memory_map.physical_page_buffer.len * @sizeOf(PageDescriptor)),
-            },
-            .{
-                .start_address = @intFromPtr(this.memory_map.virtual_page_buffer.ptr),
-                .end_address = (@as(u64, @intFromPtr(this.memory_map.virtual_page_buffer.ptr)) + this.memory_map.virtual_page_buffer.len * @sizeOf(VirtualPageDescriptor)),
-            },
-        };
+        this.memory_map.physical_page_buffer = @as([*]PageDescriptor, @ptrCast(&this.memory_map.physical_pages[0][0]))[0..num_pages];
+        this.memory_map.virtual_page_buffer = @as([*]VirtualPageDescriptor, @ptrCast(&this.memory_map.virtual_pages[0][0]))[0..num_vpages];
+
+        this.memory_map.physical_page_allocator = MemoryMap.PhysicalPageAllocator.init(this.memory_map.physical_page_buffer);
+        this.memory_map.virtual_page_allocator = MemoryMap.VirtualPageAllocator.init(this.memory_map.virtual_page_buffer);
 
         memory_slice = try bs.getMemoryMap(uefi_mm_buffer);
         var map_iterator = memory_slice.iterator();
 
         while (map_iterator.next()) |desc| {
             const info = convert_memory_type(desc.type);
-            const page_start_idx = desc.physical_start / PageSize;
 
-            for (0..desc.number_of_pages) |offset| {
-                const page_ptr = &this.memory_map.physical_page_buffer[page_start_idx + offset];
 
-                page_ptr.reference_counter = if (info.flags.persist) 1 else 0;
-                page_ptr.status = info.kind;
-
-                if (info.kind == .conventional) {
-                    for (live_ptrs) |ptr| {
-                        if (ptr.in_page(@intFromPtr(page_ptr))) {
-                            page_ptr.reference_counter += 1;
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -292,9 +277,18 @@ pub const VirtualPageDescriptor = struct {
 };
 
 pub const MemoryMap = struct {
+    pub const PhysicalPageAllocator = SimpleAllocator(PageDescriptor, 1024);
+    pub const VirtualPageAllocator = SimpleAllocator(VirtualPageDescriptor, 1024);
+
+    // uefi facing buffer
+    physical_pages: []align(4096) Page,
+    virtual_pages: []align(4096) Page,
+
+    // reinterpreted buffers and allocators
     physical_page_buffer: []PageDescriptor,
+    physical_page_allocator: PhysicalPageAllocator,
     virtual_page_buffer: []VirtualPageDescriptor,
-    virtual_page_allocator: SimpleAllocator(VirtualPageDescriptor, 1024),
+    virtual_page_allocator: VirtualPageAllocator,
 };
 
 pub fn SimpleAllocator(comptime entity_t: type, comptime free_stack_size: usize) type {
@@ -314,6 +308,39 @@ pub fn SimpleAllocator(comptime entity_t: type, comptime free_stack_size: usize)
                 .free_slots_head = 0,
             };
         }
+
+
+        /// enumerate the allocated entities into a buffer
+        /// returns the number. this is designed to use the double-enumerate pattern:
+        /// {
+        ///     const count = try allocator.enumerate_allocated(null);
+        ///     var buffer = try base_allocator.allocate_pool(entity_t*, count);
+        ///     defer base_allocator.free(buffer);
+        /// }
+        pub fn enumerate_allocated(this: *const This, buffer: ?[]*entity_t) error{ BufferTooSmall }!usize {
+            const allocated = this.count_allocated();
+
+            if(buffer) |out| {
+                if(allocated > out.len) {
+                    return error.BufferTooSmall;
+                }
+                this.enumerate_and_populate(out);
+            }
+
+            return allocated;
+        }
+
+        /// NOTE: the assumption is that we've already validated the length of the buffer
+        /// to be sufficient when we call this. (The only usage of this at time of implementation is in the
+        /// enumerate_allocated method).
+        fn enumerate_and_populate(buffer: []*entity_t) void {
+
+        }
+
+        fn count_allocated(this: *const This) usize {
+            return this.head - this.free_slots_head;
+        }
+
 
         pub fn alloc(this: *This) !*entity_t {
             if (this.has_free_slot()) {
