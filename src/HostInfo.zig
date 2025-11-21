@@ -10,6 +10,7 @@ pub const HostInfo = struct {
     // since we aren't technically hurting for memory
     const MAX_SUPPORTED_TOPOLOGY_LEVEL_COUNT: usize = 6;
     const MAX_SUPPORTED_CACHE_INFO_COUNT: usize = 6;
+    const KERNEL_DEDICATED_PAGES: usize = 2048; // this should give us 8MiB (2048*4096) as a baseline for our kernel space. Hopefully this is enough
 
     vendor_string: [13]u8,
     brand: [49]u8,
@@ -119,14 +120,14 @@ pub const HostInfo = struct {
             this.memory_map.physical_pages = try bs.allocatePages(
                 tables.AllocateLocation.any,
                 tables.MemoryType.loader_data,
-                physical_desc_pages,
+                phys_desc_pages,
             );
             errdefer bs.freePages(this.memory_map.physical_pages) catch {};
 
             this.memory_map.virtual_pages = try bs.allocatePages(
                 tables.AllocateLocation.any,
                 tables.MemoryType.loader_data,
-                virtual_desc_pages,
+                virt_desc_pages,
             );
             errdefer bs.freePages(this.memory_map.virtual_pages) catch {};
         }
@@ -140,11 +141,53 @@ pub const HostInfo = struct {
         memory_slice = try bs.getMemoryMap(uefi_mm_buffer);
         var map_iterator = memory_slice.iterator();
 
+        var high_address_ptr: u64 = this.get_max_virtual_address();
+        high_address_ptr -= PageSize;
+
         while (map_iterator.next()) |desc| {
             const info = convert_memory_type(desc.type);
 
+            var sub_page: u64 = 0;
+            while(sub_page < desc.number_of_pages) : (sub_page += 1){
+                // this is catch unreachable because we SHOULD have allocated a buffer big enough to store all of the UEFI pages.
+                // so if this alloc() fails it means our math is wrong and we need to fix our logic.
+                const nextPage: *PageDescriptor = this.memory_map.physical_page_allocator.alloc() catch unreachable;
+                nextPage.physical_page_addr = desc.physical_start + (sub_page * PageSize);
+                nextPage.reference_counter = 0;
+                nextPage.status = info.kind;
 
+                if(info.kind != .conventional or info.flags.persist) {
+                    // similarly to how the physical page allocation should never fail, the virtual page allocation should also never fail
+                    // since we allocate NumberOfPhysicalPages + Margin. We should never run out of VPages at this stage. If we do, it's a logic
+                    // bug or an extreme edge case
+                    const vPage: *VirtualPageDescriptor = this.memory_map.virtual_page_allocator.alloc() catch unreachable;
+
+                    vPage.backing_page = this.memory_map.id(nextPage) orelse unreachable;
+                    vPage.virtual_base = high_address_ptr;
+                    vPage.backing_offset = 0; // only for mmdisk
+                    vPage.flags = .{
+                        .status = info.kind,
+                        .purpose = info.purpose,
+                        .level = info.level,
+                        .read = desc.attribute.rp, // are these attribute flags correct?
+                        .write = desc.attribute.wp,
+                        .execute = desc.attribute.xp,
+                        .cache_enable = desc.attribute.uce, // ???
+                        .dirty = desc.attribute.wb, // ???
+                        .reserved = 0,
+                    }
+
+                    high_address_ptr -= PageSize;
+                }
+            }
         }
+        // TODO: Map default kernel pages
+        // TODO: Map "this.memory_map" physical pages to virtual pages and correct addresses
+        // TODO: Write map to hardware (after UEFIExitBootServices)
+    }
+
+    fn get_max_virtual_address(this: @This()) u64 {
+        return if(this.linear_address_bits == 64) ~@as(u64, 0) else (@as(u64, 1) << this.linear_address_bits) - 1;
     }
 
     const OpaqueRange = struct {
@@ -291,6 +334,19 @@ pub const MemoryMap = struct {
     virtual_page_allocator: VirtualPageAllocator,
 };
 
+/// Simple allocator that uses a backing buffer
+/// and a stack-allocated free-slot-stack for simple
+/// allocation management. It keeps a head pointer and a free-stack
+/// When an allocation is requested it'll first check if there's a slot on the free-stack
+/// if so, it'll return that address and pop it off of the stack. If the stack is empty it'll
+/// return the address at head and then increment.
+/// When an address is freed it'll push that index onto the stack "marking" it as free.
+/// Issues include the comptime-fixed free_stack_size. Obviously it's not a good long term solution
+/// alternatives could be to provide a backing stack buffer similar to the backing buffer. I'm not sure
+/// what the best option is though since this is for use outside of allocation environments e.g.
+/// This is the allocator that the kernel allocator will use. We could get around this by using either a sparse-set
+/// and using pop-and-swap to remove the need for the stack altogether. This still requires two buffers however (sparse and dense)
+/// and has the downside of double-indirection for accesses (indices instead of pointers)
 pub fn SimpleAllocator(comptime entity_t: type, comptime free_stack_size: usize) type {
     return struct {
         const This = @This();
@@ -316,6 +372,7 @@ pub fn SimpleAllocator(comptime entity_t: type, comptime free_stack_size: usize)
         ///     const count = try allocator.enumerate_allocated(null);
         ///     var buffer = try base_allocator.allocate_pool(entity_t*, count);
         ///     defer base_allocator.free(buffer);
+        ///     _ = try allocator.enumerate_allocated(buffer);
         /// }
         pub fn enumerate_allocated(this: *const This, buffer: ?[]*entity_t) error{ BufferTooSmall }!usize {
             const allocated = this.count_allocated();
@@ -330,11 +387,46 @@ pub fn SimpleAllocator(comptime entity_t: type, comptime free_stack_size: usize)
             return allocated;
         }
 
+
+        /// returns the id (index) of the page within the buffer or null if the
+        /// address does not exist within the buffer
+        /// This is mostly to tie virtual pages to physical pages without having to use a raw PageDescriptor
+        /// which has a chance of being relocated. I should find a better solution than a linear scan but this is the
+        /// quick and dirty solution to get started.
+        pub fn id(this: *const This, entity: *entity_t) ?usize {
+            for(0..this.free_slots_head) |fid| {
+                if(&this.backing_buffer[fid] == entity){
+                    return null; // if the item is freed we return null since it's not a valid address
+                }
+            }
+
+            for(0..this.head) |id| {
+                if(&this.backing_buffer[id] == entity) {
+                    return id;
+                }
+            }
+            return null;
+        }
+
         /// NOTE: the assumption is that we've already validated the length of the buffer
         /// to be sufficient when we call this. (The only usage of this at time of implementation is in the
         /// enumerate_allocated method).
-        fn enumerate_and_populate(buffer: []*entity_t) void {
+        fn enumerate_and_populate(this: *const This, buffer: []*entity_t) void {
+            var cursor: usize = 0;
 
+            ValidScan: for(0..this.head) |index| {
+                // TODO: Think of a better way to do  this without performing a linear
+                // stack scan for every slot to ensure that the given index is live
+                // (Maybe convert to a sparse-set with end swapping? Not sure if I want to
+                // pay the cost of the second indirection for every access just to make the enumerate
+                // slightly more efficient...)
+                for(0..this.free_slots_head) |fsi| {
+                    if(this.free_slots[fsi] == index) countinue :ValidScan;
+                }
+
+                buffer[cursor] = &this.backing_buffer[index];
+                cursor += 1;
+            }
         }
 
         fn count_allocated(this: *const This) usize {
