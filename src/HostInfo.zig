@@ -151,29 +151,29 @@ pub const HostInfo = struct {
             while(sub_page < desc.number_of_pages) : (sub_page += 1){
                 // this is catch unreachable because we SHOULD have allocated a buffer big enough to store all of the UEFI pages.
                 // so if this alloc() fails it means our math is wrong and we need to fix our logic.
-                const nextPage: *PageDescriptor = this.memory_map.physical_page_allocator.alloc() catch unreachable;
-                nextPage.physical_page_addr = desc.physical_start + (sub_page * PageSize);
-                nextPage.reference_counter = 0;
-                nextPage.status = info.kind;
+                const next_page: *PageDescriptor = this.memory_map.physical_page_allocator.alloc() catch unreachable;
+                next_page.physical_page_addr = desc.physical_start + (sub_page * PageSize);
+                next_page.reference_counter = 0;
+                next_page.status = info.kind;
 
                 if(info.kind != .conventional or info.flags.persist) {
                     // similarly to how the physical page allocation should never fail, the virtual page allocation should also never fail
                     // since we allocate NumberOfPhysicalPages + Margin. We should never run out of VPages at this stage. If we do, it's a logic
                     // bug or an extreme edge case
-                    const vPage: *VirtualPageDescriptor = this.memory_map.virtual_page_allocator.alloc() catch unreachable;
+                    const v_page: *VirtualPageDescriptor = this.memory_map.virtual_page_allocator.alloc() catch unreachable;
 
-                    vPage.backing_page = this.memory_map.id(nextPage) orelse unreachable;
-                    vPage.virtual_base = high_address_ptr;
-                    vPage.backing_offset = 0; // only for mmdisk
-                    vPage.flags = .{
+                    v_page.backing_page = this.memory_map.id(nextPage) orelse unreachable;
+                    v_page.virtual_base = high_address_ptr;
+                    v_page.backing_offset = 0; // only for mmdisk
+                    v_page.flags = .{
                         .status = info.kind,
                         .purpose = info.purpose,
                         .level = info.level,
                         .read = desc.attribute.rp, // are these attribute flags correct?
                         .write = desc.attribute.wp,
                         .execute = desc.attribute.xp,
-                        .cache_enable = desc.attribute.uce, // ???
-                        .dirty = desc.attribute.wb, // ???
+                        .cache_enable = true, // probably, but not reliable, we need to set this through a different mechanism
+                        .dirty = false,
                         .reserved = 0,
                     }
 
@@ -181,6 +181,13 @@ pub const HostInfo = struct {
                 }
             }
         }
+
+        for(0..KERNEL_DEDICATED_PAGES) |page| {
+            const phys_page = this.memory_map.physical_page_allocator.alloc()
+                catch serial.runtime_error_norecover("Unable to allocate kernel pages\n", .{}); // TODO: better handling
+
+        }
+
         // TODO: Map default kernel pages
         // TODO: Map "this.memory_map" physical pages to virtual pages and correct addresses
         // TODO: Write map to hardware (after UEFIExitBootServices)
@@ -334,6 +341,17 @@ pub const MemoryMap = struct {
     virtual_page_allocator: VirtualPageAllocator,
 };
 
+// TODO: Use a RingBuffer + Iterator approach to implement "request" for the next free
+// page meeting the criteria of: conventional memory with 0 in its reference_counter
+pub fn PhysicalPageAllocator(comptime free_stack_size: usize) type {
+    return struct {
+
+        const This = @This();
+
+        base_allocator: SimpleAllocator(PageDescriptor, free_stack_size),
+
+    }
+}
 /// Simple allocator that uses a backing buffer
 /// and a stack-allocated free-slot-stack for simple
 /// allocation management. It keeps a head pointer and a free-stack
