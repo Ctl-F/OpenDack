@@ -106,6 +106,13 @@ pub fn write_message(comptime fmt: []const u8, args: anytype) void {
     }
 }
 
+pub fn assert(ok: bool) void {
+    if (!ok) {
+        runtime_error_norecover("Assert has failed\n", .{});
+    }
+    unreachable;
+}
+
 pub fn runtime_error_norecover(comptime fmt: []const u8, args: anytype) noreturn {
     write_message(fmt, args);
     @trap();

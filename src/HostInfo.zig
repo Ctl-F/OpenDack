@@ -343,15 +343,33 @@ pub const MemoryMap = struct {
 
 // TODO: Use a RingBuffer + Iterator approach to implement "request" for the next free
 // page meeting the criteria of: conventional memory with 0 in its reference_counter
-pub fn PhysicalPageAllocator(comptime free_stack_size: usize) type {
+pub fn PhysicalPageAllocator() type {
     return struct {
-
         const This = @This();
 
-        base_allocator: SimpleAllocator(PageDescriptor, free_stack_size),
+        page_pool: []PageDescriptor,
+        cursor: usize,
 
+        pub fn init(pool: []PageDescriptor) This {
+            return This {
+                .page_pool = pool,
+                .cursor = 0,
+            };
+        }
+
+        pub fn alloc(this: *This) *PageDescriptor {
+
+        }
+
+        fn next(this: This) usize {
+            serial.assert(this.page_pool.len != 0);
+            return (this.cursor + 1) % this.page_pool.len;
+        }
     }
 }
+
+
+
 /// Simple allocator that uses a backing buffer
 /// and a stack-allocated free-slot-stack for simple
 /// allocation management. It keeps a head pointer and a free-stack
