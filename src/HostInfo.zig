@@ -2,7 +2,7 @@ const std = @import("std");
 const runtime = @import("runtime.zig");
 const serial = @import("serial.zig");
 
-const NUM_AVAIABLE_EXTRA_VPAGES = 1024;
+const NUM_AVAILABLE_EXTRA_VPAGES = 1024;
 
 pub const HostInfo = struct {
     // In practice the max of 3 should be enough, but
@@ -148,21 +148,21 @@ pub const HostInfo = struct {
             const info = convert_memory_type(desc.type);
 
             var sub_page: u64 = 0;
-            while(sub_page < desc.number_of_pages) : (sub_page += 1){
+            while (sub_page < desc.number_of_pages) : (sub_page += 1) {
                 // this is catch unreachable because we SHOULD have allocated a buffer big enough to store all of the UEFI pages.
                 // so if this alloc() fails it means our math is wrong and we need to fix our logic.
                 const next_page: *PageDescriptor = this.memory_map.physical_page_allocator.alloc() catch unreachable;
                 next_page.physical_page_addr = desc.physical_start + (sub_page * PageSize);
                 next_page.reference_counter = 0;
-                next_page.status = info.kind;
+                next_page.kind = info.kind;
 
-                if(info.kind != .conventional or info.flags.persist) {
+                if (info.kind != .conventional or info.flags.persist) {
                     // similarly to how the physical page allocation should never fail, the virtual page allocation should also never fail
                     // since we allocate NumberOfPhysicalPages + Margin. We should never run out of VPages at this stage. If we do, it's a logic
                     // bug or an extreme edge case
                     const v_page: *VirtualPageDescriptor = this.memory_map.virtual_page_allocator.alloc() catch unreachable;
 
-                    v_page.backing_page = this.memory_map.id(nextPage) orelse unreachable;
+                    v_page.backing_page = this.memory_map.id(next_page) orelse unreachable;
                     v_page.virtual_base = high_address_ptr;
                     v_page.backing_offset = 0; // only for mmdisk
                     v_page.flags = .{
@@ -175,17 +175,18 @@ pub const HostInfo = struct {
                         .cache_enable = true, // probably, but not reliable, we need to set this through a different mechanism
                         .dirty = false,
                         .reserved = 0,
-                    }
+                    };
 
                     high_address_ptr -= PageSize;
                 }
             }
         }
 
-        for(0..KERNEL_DEDICATED_PAGES) |page| {
-            const phys_page = this.memory_map.physical_page_allocator.alloc()
-                catch serial.runtime_error_norecover("Unable to allocate kernel pages\n", .{}); // TODO: better handling
-
+        for (0..KERNEL_DEDICATED_PAGES) |page| {
+            const phys_page = this.memory_map.physical_page_allocator.alloc() catch serial.runtime_error_norecover("Unable to allocate kernel pages\n", .{}); // TODO: better handling
+            _ = page;
+            _ = phys_page;
+            // TODO: Finish this
         }
 
         // TODO: Map default kernel pages
@@ -194,7 +195,7 @@ pub const HostInfo = struct {
     }
 
     fn get_max_virtual_address(this: @This()) u64 {
-        return if(this.linear_address_bits == 64) ~@as(u64, 0) else (@as(u64, 1) << this.linear_address_bits) - 1;
+        return if (this.linear_address_bits == 64) ~@as(u64, 0) else (@as(u64, 1) << this.linear_address_bits) - 1;
     }
 
     const OpaqueRange = struct {
@@ -316,7 +317,7 @@ pub const PageFlags = packed struct(u32) {
 pub const PageDescriptor = struct {
     physical_base_addr: u64,
     reference_counter: u16,
-    status: PageType,
+    kind: PageType,
 };
 
 pub const VirtualPageDescriptor = struct {
@@ -341,9 +342,7 @@ pub const MemoryMap = struct {
     virtual_page_allocator: VirtualPageAllocator,
 };
 
-// TODO: Use a RingBuffer + Iterator approach to implement "request" for the next free
-// page meeting the criteria of: conventional memory with 0 in its reference_counter
-pub fn PhysicalPageAllocator() type {
+pub fn PhysicalPageAllocator_() type {
     return struct {
         const This = @This();
 
@@ -351,24 +350,90 @@ pub fn PhysicalPageAllocator() type {
         cursor: usize,
 
         pub fn init(pool: []PageDescriptor) This {
-            return This {
+            return This{
                 .page_pool = pool,
                 .cursor = 0,
             };
         }
 
-        pub fn alloc(this: *This) *PageDescriptor {
+        pub fn alloc(this: *This) error{OutOfPages}!*PageDescriptor {
+            var seek = this.cursor;
+            while (true) : (seek = this.next(seek)) {
+                const pd = &this.page_pool[seek];
+                if (pd.kind == .conventional and pd.reference_counter == 0) {
+                    this.cursor = seek;
+                    pd.reference_counter += 1;
+                    return pd;
+                }
 
+                if (seek == this.last(this.cursor)) {
+                    break;
+                }
+            }
+            return error.OutOfPages;
         }
 
-        fn next(this: This) usize {
+        pub fn free(this: *This, base_addr: u64) void {
+            if (addr_in_page(base_addr, this.page_pool[this.cursor].physical_base_addr)) {
+                this.free_page(this.cursor);
+                return;
+            }
+            // seek backwards since we would logically expect most recent allocations to be freed before least recent allocations
+            // (scope-paradigm will generally favor this)
+            // so we should find the correct page sooner scanning in reverse order
+            var seek = this.last(this.cursor);
+            while (seek != this.cursor) : (seek = this.last(seek)) {
+                if (addr_in_page(base_addr, this.page_pool[seek].physical_base_addr)) {
+                    this.free_page(seek);
+                    return;
+                }
+            }
+            // page not found, not sure if we need to report this or not...
+        }
+
+        inline fn addr_in_page(checked_ptr: u64, page_base: u64) bool {
+            return checked_ptr >= page_base and checked_ptr < page_base + PageSize;
+        }
+
+        fn free_page(this: *This, index: usize) void {
+            serial.assert(index < this.page_pool.len);
+
+            const page = &this.page_pool[index];
+
+            if (!is_freeable(page.kind)) {
+                // TODO: see if we should return some kind of error to flag this or not
+                // zig philosophy states that freeing must succeed (if it doesn't there usually isn't much
+                // to do anyway) That said, it might be usefull from a kernel level to catch this and report it.
+                return;
+            }
+
+            if (page.reference_counter > 0) {
+                page.reference_counter -= 1;
+
+                // minor optimization, if we fully free the page, we can back the cursor up so
+                // that we guarentee that the next alloc is cheap (it'll succeed on the first iteration of the scan)
+                if (page.reference_counter == 0) {
+                    this.cursor = this.last(index);
+                }
+            }
+            // else double-free, I'm not certain if we should flag this or not (see earlier note)
+        }
+
+        fn is_freeable(kind: PageType) bool {
+            return kind == .conventional;
+        }
+
+        fn next(this: This, crs: usize) usize {
             serial.assert(this.page_pool.len != 0);
-            return (this.cursor + 1) % this.page_pool.len;
+            return (crs + 1) % this.page_pool.len;
         }
-    }
+
+        fn last(this: This, crs: usize) usize {
+            serial.assert(this.page_pool.len != 0);
+            return (crs -% 1) % this.page_pool.len;
+        }
+    };
 }
-
-
 
 /// Simple allocator that uses a backing buffer
 /// and a stack-allocated free-slot-stack for simple
@@ -401,7 +466,6 @@ pub fn SimpleAllocator(comptime entity_t: type, comptime free_stack_size: usize)
             };
         }
 
-
         /// enumerate the allocated entities into a buffer
         /// returns the number. this is designed to use the double-enumerate pattern:
         /// {
@@ -410,11 +474,11 @@ pub fn SimpleAllocator(comptime entity_t: type, comptime free_stack_size: usize)
         ///     defer base_allocator.free(buffer);
         ///     _ = try allocator.enumerate_allocated(buffer);
         /// }
-        pub fn enumerate_allocated(this: *const This, buffer: ?[]*entity_t) error{ BufferTooSmall }!usize {
+        pub fn enumerate_allocated(this: *const This, buffer: ?[]*entity_t) error{BufferTooSmall}!usize {
             const allocated = this.count_allocated();
 
-            if(buffer) |out| {
-                if(allocated > out.len) {
+            if (buffer) |out| {
+                if (allocated > out.len) {
                     return error.BufferTooSmall;
                 }
                 this.enumerate_and_populate(out);
@@ -423,22 +487,21 @@ pub fn SimpleAllocator(comptime entity_t: type, comptime free_stack_size: usize)
             return allocated;
         }
 
-
         /// returns the id (index) of the page within the buffer or null if the
         /// address does not exist within the buffer
         /// This is mostly to tie virtual pages to physical pages without having to use a raw PageDescriptor
         /// which has a chance of being relocated. I should find a better solution than a linear scan but this is the
         /// quick and dirty solution to get started.
         pub fn id(this: *const This, entity: *entity_t) ?usize {
-            for(0..this.free_slots_head) |fid| {
-                if(&this.backing_buffer[fid] == entity){
+            for (0..this.free_slots_head) |fid| {
+                if (&this.backing_buffer[fid] == entity) {
                     return null; // if the item is freed we return null since it's not a valid address
                 }
             }
 
-            for(0..this.head) |id| {
-                if(&this.backing_buffer[id] == entity) {
-                    return id;
+            for (0..this.head) |idx| {
+                if (&this.backing_buffer[idx] == entity) {
+                    return idx;
                 }
             }
             return null;
@@ -450,14 +513,14 @@ pub fn SimpleAllocator(comptime entity_t: type, comptime free_stack_size: usize)
         fn enumerate_and_populate(this: *const This, buffer: []*entity_t) void {
             var cursor: usize = 0;
 
-            ValidScan: for(0..this.head) |index| {
+            ValidScan: for (0..this.head) |index| {
                 // TODO: Think of a better way to do  this without performing a linear
                 // stack scan for every slot to ensure that the given index is live
                 // (Maybe convert to a sparse-set with end swapping? Not sure if I want to
                 // pay the cost of the second indirection for every access just to make the enumerate
                 // slightly more efficient...)
-                for(0..this.free_slots_head) |fsi| {
-                    if(this.free_slots[fsi] == index) countinue :ValidScan;
+                for (0..this.free_slots_head) |fsi| {
+                    if (this.free_slots[fsi] == index) continue :ValidScan;
                 }
 
                 buffer[cursor] = &this.backing_buffer[index];
@@ -468,7 +531,6 @@ pub fn SimpleAllocator(comptime entity_t: type, comptime free_stack_size: usize)
         fn count_allocated(this: *const This) usize {
             return this.head - this.free_slots_head;
         }
-
 
         pub fn alloc(this: *This) !*entity_t {
             if (this.has_free_slot()) {
