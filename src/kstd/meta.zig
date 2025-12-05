@@ -20,6 +20,10 @@ pub fn expect_type(t: anytype, expected: type) void {
     }
 }
 
+pub fn is_nullable(t: anytype) bool {
+    return @typeInfo(@TypeOf(t)) == .optional;
+}
+
 const MAX_PARAMS_FOR_VALIDATION = 128;
 const FunctionSignature = struct {
     params_buffer: [MAX_PARAMS_FOR_VALIDATION]type,
