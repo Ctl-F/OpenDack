@@ -1,6 +1,7 @@
 const std = @import("std");
 const runtime = @import("runtime.zig");
 const serial = @import("serial.zig");
+const ring = @import("kstd/RingBuffer.zig");
 
 const NUM_AVAILABLE_EXTRA_VPAGES = 1024;
 
@@ -189,6 +190,12 @@ pub const HostInfo = struct {
             // TODO: Finish this
         }
 
+        this.memory_map.physical_page_alloc = PhysicalPageAllocator.init(
+            this.memory_map.physical_page_allocator.backing_buffer[
+                0..this.memory_map.physical_page_allocator.head
+            ]
+        );
+
         // TODO: Map default kernel pages
         // TODO: Map "this.memory_map" physical pages to virtual pages and correct addresses
         // TODO: Write map to hardware (after UEFIExitBootServices)
@@ -328,7 +335,7 @@ pub const VirtualPageDescriptor = struct {
 };
 
 pub const MemoryMap = struct {
-    pub const PhysicalPageAllocator = SimpleAllocator(PageDescriptor, 1024);
+    pub const PhysicalPageMapAllocator = SimpleAllocator(PageDescriptor, 1024);
     pub const VirtualPageAllocator = SimpleAllocator(VirtualPageDescriptor, 1024);
 
     // uefi facing buffer
@@ -337,103 +344,139 @@ pub const MemoryMap = struct {
 
     // reinterpreted buffers and allocators
     physical_page_buffer: []PageDescriptor,
-    physical_page_allocator: PhysicalPageAllocator,
+    physical_page_allocator: PhysicalPageMapAllocator,
     virtual_page_buffer: []VirtualPageDescriptor,
     virtual_page_allocator: VirtualPageAllocator,
+
+    physical_page_alloc: PhysicalPageAllocator,
 };
 
-pub fn PhysicalPageAllocator_() type {
-    return struct {
-        const This = @This();
-
-        page_pool: []PageDescriptor,
-        cursor: usize,
-
-        pub fn init(pool: []PageDescriptor) This {
-            return This{
-                .page_pool = pool,
-                .cursor = 0,
-            };
-        }
-
-        pub fn alloc(this: *This) error{OutOfPages}!*PageDescriptor {
-            var seek = this.cursor;
-            while (true) : (seek = this.next(seek)) {
-                const pd = &this.page_pool[seek];
-                if (pd.kind == .conventional and pd.reference_counter == 0) {
-                    this.cursor = seek;
-                    pd.reference_counter += 1;
-                    return pd;
-                }
-
-                if (seek == this.last(this.cursor)) {
-                    break;
-                }
-            }
-            return error.OutOfPages;
-        }
-
-        pub fn free(this: *This, base_addr: u64) void {
-            if (addr_in_page(base_addr, this.page_pool[this.cursor].physical_base_addr)) {
-                this.free_page(this.cursor);
-                return;
-            }
-            // seek backwards since we would logically expect most recent allocations to be freed before least recent allocations
-            // (scope-paradigm will generally favor this)
-            // so we should find the correct page sooner scanning in reverse order
-            var seek = this.last(this.cursor);
-            while (seek != this.cursor) : (seek = this.last(seek)) {
-                if (addr_in_page(base_addr, this.page_pool[seek].physical_base_addr)) {
-                    this.free_page(seek);
-                    return;
-                }
-            }
-            // page not found, not sure if we need to report this or not...
-        }
-
-        inline fn addr_in_page(checked_ptr: u64, page_base: u64) bool {
-            return checked_ptr >= page_base and checked_ptr < page_base + PageSize;
-        }
-
-        fn free_page(this: *This, index: usize) void {
-            serial.assert(index < this.page_pool.len);
-
-            const page = &this.page_pool[index];
-
-            if (!is_freeable(page.kind)) {
-                // TODO: see if we should return some kind of error to flag this or not
-                // zig philosophy states that freeing must succeed (if it doesn't there usually isn't much
-                // to do anyway) That said, it might be usefull from a kernel level to catch this and report it.
-                return;
-            }
-
-            if (page.reference_counter > 0) {
-                page.reference_counter -= 1;
-
-                // minor optimization, if we fully free the page, we can back the cursor up so
-                // that we guarentee that the next alloc is cheap (it'll succeed on the first iteration of the scan)
-                if (page.reference_counter == 0) {
-                    this.cursor = this.last(index);
-                }
-            }
-            // else double-free, I'm not certain if we should flag this or not (see earlier note)
-        }
-
-        fn is_freeable(kind: PageType) bool {
-            return kind == .conventional;
-        }
-
-        fn next(this: This, crs: usize) usize {
-            serial.assert(this.page_pool.len != 0);
-            return (crs + 1) % this.page_pool.len;
-        }
-
-        fn last(this: This, crs: usize) usize {
-            serial.assert(this.page_pool.len != 0);
-            return (crs -% 1) % this.page_pool.len;
-        }
+const PhysicalPageAllocationMethods = struct {
+    pub const PhysicalPageAllocationErrors = enum {
+        PageNotFreeable,
+        DoubleFree,
     };
-}
+
+    pub fn RequestPredicate(pd: *const PageDescriptor) bool {
+        return pd.kind == .conventional and pd.reference_counter == 0;
+    }
+
+    pub fn ObtainObject(pd: *PageDescriptor) !void {
+        pd.reference_counter += 1;
+    }
+
+    pub fn FreeObject(pd: *PageDescriptor) !bool {
+        if(pd.kind != .conventional) {
+            return PhysicalPageAllocationErrors.PageNotFreeable;
+        }
+
+        if(pd.reference_counter == 0){
+            return PhysicalPageAllocationErrors.DoubleFree;
+        }
+
+        pd.reference_counter -= 1;
+        return pd.reference_counter == 0;
+    }
+};
+
+pub const PhysicalPageAllocator = ring.RingBuffer(PageDescriptor, .{
+    .RequestPredicate = PhysicalPageAllocationMethods.RequestPredicate,
+    .ObtainObject = PhysicalPageAllocationMethods.ObtainObject,
+    .FreeObject = PhysicalPageAllocationMethods.FreeObject,
+});
+
+// pub fn PhysicalPageAllocator_() type {
+//     return struct {
+//         const This = @This();
+
+//         page_pool: []PageDescriptor,
+//         cursor: usize,
+
+//         pub fn init(pool: []PageDescriptor) This {
+//             return This{
+//                 .page_pool = pool,
+//                 .cursor = 0,
+//             };
+//         }
+
+//         pub fn alloc(this: *This) error{OutOfPages}!*PageDescriptor {
+//             var seek = this.cursor;
+//             while (true) : (seek = this.next(seek)) {
+//                 const pd = &this.page_pool[seek];
+//                 if (pd.kind == .conventional and pd.reference_counter == 0) {
+//                     this.cursor = seek;
+//                     pd.reference_counter += 1;
+//                     return pd;
+//                 }
+
+//                 if (seek == this.last(this.cursor)) {
+//                     break;
+//                 }
+//             }
+//             return error.OutOfPages;
+//         }
+
+//         pub fn free(this: *This, base_addr: u64) void {
+//             if (addr_in_page(base_addr, this.page_pool[this.cursor].physical_base_addr)) {
+//                 this.free_page(this.cursor);
+//                 return;
+//             }
+//             // seek backwards since we would logically expect most recent allocations to be freed before least recent allocations
+//             // (scope-paradigm will generally favor this)
+//             // so we should find the correct page sooner scanning in reverse order
+//             var seek = this.last(this.cursor);
+//             while (seek != this.cursor) : (seek = this.last(seek)) {
+//                 if (addr_in_page(base_addr, this.page_pool[seek].physical_base_addr)) {
+//                     this.free_page(seek);
+//                     return;
+//                 }
+//             }
+//             // page not found, not sure if we need to report this or not...
+//         }
+
+//         inline fn addr_in_page(checked_ptr: u64, page_base: u64) bool {
+//             return checked_ptr >= page_base and checked_ptr < page_base + PageSize;
+//         }
+
+//         fn free_page(this: *This, index: usize) void {
+//             serial.assert(index < this.page_pool.len);
+
+//             const page = &this.page_pool[index];
+
+//             if (!is_freeable(page.kind)) {
+//                 // TODO: see if we should return some kind of error to flag this or not
+//                 // zig philosophy states that freeing must succeed (if it doesn't there usually isn't much
+//                 // to do anyway) That said, it might be usefull from a kernel level to catch this and report it.
+//                 return;
+//             }
+
+//             if (page.reference_counter > 0) {
+//                 page.reference_counter -= 1;
+
+//                 // minor optimization, if we fully free the page, we can back the cursor up so
+//                 // that we guarentee that the next alloc is cheap (it'll succeed on the first iteration of the scan)
+//                 if (page.reference_counter == 0) {
+//                     this.cursor = this.last(index);
+//                 }
+//             }
+//             // else double-free, I'm not certain if we should flag this or not (see earlier note)
+//         }
+
+//         fn is_freeable(kind: PageType) bool {
+//             return kind == .conventional;
+//         }
+
+//         fn next(this: This, crs: usize) usize {
+//             serial.assert(this.page_pool.len != 0);
+//             return (crs + 1) % this.page_pool.len;
+//         }
+
+//         fn last(this: This, crs: usize) usize {
+//             serial.assert(this.page_pool.len != 0);
+//             return (crs -% 1) % this.page_pool.len;
+//         }
+//     };
+// }
 
 /// Simple allocator that uses a backing buffer
 /// and a stack-allocated free-slot-stack for simple
